@@ -1,0 +1,296 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: This template creates the SOE baking resources.
+
+
+Parameters:
+  pStackPrefix:
+    Type: String
+
+  pSOEBuildStateMachineArn:
+    Description: State Machine ARN for SOE Build
+    Type: String
+
+  pSOEReleaseStateMachineArn:
+    Description: State Machine ARN for SOE Release
+    Type: String
+
+  pNotifyCloudwatchFunctionArn:
+    Description: Cloudwatch Nofify Lambda Function ARN
+    Type: String
+  
+  pLatestAMIParameter:
+    Description: Latest AMI parameter name
+    Type: String
+
+  pMemberAccountId:
+    Description: Member account ID that we need to send the events to (using it's event bus)
+    Type: String
+
+Resources:
+
+################################################ Cloudwatch Alarm Section ##############################################
+
+  rBuildSOEStepFunctionFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: True
+      AlarmDescription: !Sub
+        - "Notify on SOE Build StepFunction failures for ${pSOEBuildStateMachineName}"
+        - {pSOEBuildStateMachineName: !Select [6, !Split [":", !Ref pSOEBuildStateMachineArn]]}
+      AlarmName: !Sub
+        - ${pSOEBuildStateMachineName}-cw-alarm
+        - {pSOEBuildStateMachineName: !Select [6, !Split [":", !Ref pSOEBuildStateMachineArn]]}
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: ignore
+      EvaluationPeriods: 1
+      Threshold: 0.0
+      Metrics:
+        - Id: ef
+          MetricStat:
+            Metric:
+              Dimensions:
+                -
+                  Name: StateMachineArn
+                  Value: !Ref pSOEBuildStateMachineArn
+              MetricName: ExecutionsFailed
+              Namespace: AWS/States
+            Period: 60
+            Stat: Sum
+          ReturnData: False
+        - Id: et
+          MetricStat:
+            Metric:
+              Dimensions:
+                -
+                  Name: StateMachineArn
+                  Value: !Ref pSOEBuildStateMachineArn
+              MetricName: ExecutionsTimedOut
+              Namespace: AWS/States
+            Period: 60
+            Stat: Sum
+          ReturnData: False
+        - Id: inFailedState
+          Expression: 'ef+et'
+          Label: InFailedState
+          ReturnData: True
+      AlarmActions:
+        - Ref: "rStepFunctionFailureSNSTopic"
+
+  rReleaseSOEStepFunctionFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: True
+      AlarmDescription: !Sub
+        - "Notify on SOE Release StepFunction failures for ${pSOEReleaseStateMachineName}"
+        - {pSOEReleaseStateMachineName: !Select [6, !Split [":", !Ref pSOEReleaseStateMachineArn]]}
+      AlarmName: !Sub
+        - ${pSOEReleaseStateMachineName}-cw-alarm
+        - {pSOEReleaseStateMachineName: !Select [6, !Split [":", !Ref pSOEReleaseStateMachineArn]]}
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: ignore
+      EvaluationPeriods: 1
+      Threshold: 0.0
+      Metrics:
+        - Id: ef
+          MetricStat:
+            Metric:
+              Dimensions:
+                -
+                  Name: StateMachineArn
+                  Value: !Ref pSOEReleaseStateMachineArn
+              MetricName: ExecutionsFailed
+              Namespace: AWS/States
+            Period: 60
+            Stat: Sum
+          ReturnData: False
+        - Id: et
+          MetricStat:
+            Metric:
+              Dimensions:
+                -
+                  Name: StateMachineArn
+                  Value: !Ref pSOEReleaseStateMachineArn
+              MetricName: ExecutionsTimedOut
+              Namespace: AWS/States
+            Period: 60
+            Stat: Sum
+          ReturnData: False
+        - Id: inFailedState
+          Expression: 'ef+et'
+          Label: InFailedState
+          ReturnData: True
+      AlarmActions:
+        - Ref: "rStepFunctionFailureSNSTopic"
+
+  rStepFunctionFailureSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${pStackPrefix}-soe-cloudwatch-sns-topic
+
+  rStepFunctionFailureSNSPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Sid: AWSCloudWatchSNSPolicy
+          Effect: Allow
+          Principal:
+            AWS: "*"
+          Resource: !Ref rStepFunctionFailureSNSTopic
+          Action: sns:Publish
+          Condition:
+            StringEquals:
+              'AWS:SourceOwner': !Ref 'AWS::AccountId'
+      Topics:
+       - !Ref rStepFunctionFailureSNSTopic
+
+  rStepFunctionFailureInvokeLambdaPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref pNotifyCloudwatchFunctionArn
+      Action: "lambda:InvokeFunction"
+      Principal: "sns.amazonaws.com"
+      SourceArn: !Ref rStepFunctionFailureSNSTopic
+
+  rStepFunctionFailureSNSLambdaTarget:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref pNotifyCloudwatchFunctionArn
+      Protocol: lambda
+      TopicArn: !Ref rStepFunctionFailureSNSTopic
+
+
+  # Cloudwatch monitoring dashboard
+  rCloudWatchDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${pStackPrefix}-soe-cw-dashboard
+      DashboardBody: !Sub
+        - |
+          {
+            "widgets": [
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 0,
+                "width": 18,
+                "height": 6,
+                "properties": {
+                  "view": "timeSeries",
+                  "stacked": false,
+                  "metrics": [
+                    ["AWS/States", "ExecutionsStarted",  "StateMachineArn", "${pSOEBuildStateMachineArn}", {
+                          "period": 300,
+                          "stat": "Sum",
+                          "color": "#1f77b4"
+                        }],
+                    ["AWS/States", "ExecutionsSucceeded",  "StateMachineArn", "${pSOEBuildStateMachineArn}", {
+                          "period": 300,
+                          "stat": "Sum",
+                          "color": "#2ca02c"
+                        }],
+                    ["AWS/States", "ExecutionsFailed",  "StateMachineArn", "${pSOEBuildStateMachineArn}", {
+                          "period": 300,
+                          "stat": "Sum",
+                          "color": "#d62728"
+                        }],
+                    ["AWS/States", "ExecutionsAborted",  "StateMachineArn", "${pSOEBuildStateMachineArn}", {
+                          "period": 300,
+                          "stat": "Sum",
+                          "color": "#ff7f0e"
+                        }]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Executions - Linux SOE Build Workflow (${pSOEBuildStateMachineName})"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 0,
+                "width": 18,
+                "height": 6,
+                "properties": {
+                  "view": "timeSeries",
+                  "stacked": false,
+                  "metrics": [
+                    ["AWS/States", "ExecutionsStarted",  "StateMachineArn", "${pSOEReleaseStateMachineArn}", {
+                          "period": 300,
+                          "stat": "Sum",
+                          "color": "#1f77b4"
+                        }],
+                    ["AWS/States", "ExecutionsSucceeded",  "StateMachineArn", "${pSOEReleaseStateMachineArn}", {
+                          "period": 300,
+                          "stat": "Sum",
+                          "color": "#2ca02c"
+                        }],
+                    ["AWS/States", "ExecutionsFailed",  "StateMachineArn", "${pSOEReleaseStateMachineArn}", {
+                          "period": 300,
+                          "stat": "Sum",
+                          "color": "#d62728"
+                        }],
+                    ["AWS/States", "ExecutionsAborted",  "StateMachineArn", "${pSOEReleaseStateMachineArn}", {
+                          "period": 300,
+                          "stat": "Sum",
+                          "color": "#ff7f0e"
+                        }]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Executions - Linux SOE Release Workflow (${pSOEReleaseStateMachineName})"
+                }
+              }
+            ]
+          }
+        - {pSOEBuildStateMachineName: !Select [6, !Split [":", !Ref pSOEBuildStateMachineArn]], pSOEReleaseStateMachineName: !Select [6, !Split [":", !Ref pSOEReleaseStateMachineArn]]}
+
+  rCrossAccountEventTargetRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/service/"
+      RoleName: !Sub ${pStackPrefix}-cross-account-eventbus-cw-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        -
+          PolicyName: "CrossAccountEventBusAccess"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+                - events:PutEvents
+              Resource:
+                - arn:aws:events:ap-southeast-2:649876518110:event-bus/default
+ 
+  rCrossAccountParameterChangeEventRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: "Cross account event rule for latest AMI parameter update"
+      EventPattern: 
+        source: 
+          - "aws.ssm"
+        detail-type: 
+          - "Parameter Store Change"
+        detail: 
+          name: 
+            - !Ref pLatestAMIParameter
+          operation:
+            - Create
+            - Update
+      State: "ENABLED"
+      Targets: 
+        - 
+          Id: CrossAccountTarget
+          Arn: !Sub "arn:aws:events:${AWS::Region}:${pMemberAccountId}:event-bus/default"
+          RoleArn: !GetAtt rCrossAccountEventTargetRole.Arn
+
+Outputs:
+  oCloudWatchDashboardName:
+    Value: !Ref rCloudWatchDashboard

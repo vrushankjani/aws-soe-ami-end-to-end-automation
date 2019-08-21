@@ -1,0 +1,1488 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: This template creates the SOE baking resources.
+
+
+Parameters:
+  pStackPrefix:
+    Type: String
+
+  # pOrganisationAccountID:
+  #   Type: String
+  #   Description: "Organisation account ID"
+
+  # pOrganisationAccountRole:
+  #   Type: String
+  #   Description: "Role in the organisation accont used to create accounts"
+
+  pAMIPattern:
+    Description: Provide the string to match the specific type of AMI to be used. e.g "amzn-ami-hvm-????.??.?.????????-x86_64-gp2" This will be used by aws ec2 describe-images to retrive the latest ami for the SOE Type.
+    Type: String
+
+  pAMIOwner:
+    Description: Specify the owner of the AMI e.g amazon or aws-marketplace.
+    Type: String
+
+  pOSType:
+    Description: Operating system type e.g rhel or windows serv
+    Type: String
+    AllowedValues:
+      - rhel
+      - serv
+      - ubun
+      - amzn
+
+  pOS:
+    Description: Operating system linux or windows
+    Type: String
+    AllowedValues:
+      - lnx
+      - win
+
+  pVulnerabilityExceptionsList:
+    Description: CVE Vulnerability exception list
+    Type: String
+
+  pOverrideAMI:
+    Description: AMI ID to ovveride the latest AMI from the marketplace
+    Type: String
+
+  pSlackChannel:
+    Type: String
+    Description: "Slack channel to use"
+
+  pSlackURL:
+    Type: String
+    Description: "Slack URL to use"
+
+  pSlackIcon:
+    Type: String
+    Description: "Slack icon to use"
+
+  pUseSlackIntegration:
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+
+  pEnvironment:
+    Type : String
+    Description: "Account environment name"
+
+  pBuildSchedule:
+    Type : String
+    Description: "How often the SOE Build is triggered (Schedule Expression: https://docs.aws.amazon.com/AmazonCloudWatch/latest/events/ScheduledEvents.html)"
+
+  pReleaseSchedule:
+    Type : String
+    Description: "How often the SOE Release is triggered (Schedule Expression: https://docs.aws.amazon.com/AmazonCloudWatch/latest/events/ScheduledEvents.html)"
+
+  pVulnerabilityScanDuration:
+    Type : Number
+    Description: "How long the inpsector Vulnerability scan should run for when scanning the test hosts. If more than 1200 edit resource -rAutomationDocTestLinuxAMI stage -runSleep timeout"
+
+  pLogRetentionDays:
+    Type: Number
+    Description: Number of days to retain logs on automation
+
+  pMemberAccountId:
+    Type: String
+    Description: Member account ID to share this AMI with. Currently only supporing one member accoubnt.
+    Default: ""
+
+  pInspecTestFilesBucket:
+    Type: String
+    Description: "ARN of the bucket which contains Inspect Test File"
+
+Conditions:
+
+  LnxOS: !Equals [ !Ref pOS, lnx ]
+
+Resources:
+  ################################################ StepFunctions Section ##############################################
+
+  rCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${pStackPrefix}-cw-iam-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - events.amazonaws.com
+      Path: "/service/"
+      ManagedPolicyArns:
+        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
+
+  rCloudWatchRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${pStackPrefix}-cw-iam-policy
+      Path: "/service/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Action:
+              - states:StartExecution
+            Resource:
+              - !Ref rBuildSOEStateMachine
+              - !Ref rReleaseSOEStateMachine
+      Roles:
+        -
+          Ref: "rCloudWatchRole"
+
+
+  # Only create the Scheduled Event if its the publishing account
+  rSOEBuildScheduleCronRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub ${pStackPrefix}-build-sf-sm-cw-er
+      Description: "Rule to tigger SOE Build StepFunction state machine"
+      ScheduleExpression: !Sub ${pBuildSchedule}
+      State: ENABLED
+      Targets:
+        - Arn: !Ref rBuildSOEStateMachine
+          Id: !Sub ${pStackPrefix}-build-sf-sm-cw-er
+          RoleArn: !GetAtt
+            - rCloudWatchRole
+            - Arn
+
+  # Only create the Scheduled Event if its the publishing account
+  rSOEReleaseScheduleCronRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub ${pStackPrefix}-release-sf-sm-cw-er
+      Description: "Rule to tigger SOE Release StepFunction state machine"
+      ScheduleExpression: !Sub ${pReleaseSchedule}
+      State: ENABLED
+      Targets:
+        - Arn: !Ref rReleaseSOEStateMachine
+          Id: !Sub ${pStackPrefix}-release-sf-sm-cw-er
+          RoleArn: !GetAtt
+            - rCloudWatchRole
+            - Arn
+
+  rStepFunctionExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub ${pStackPrefix}-sf-iam-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - !Sub states.${AWS::Region}.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: "/service/"
+      ManagedPolicyArns:
+        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
+
+  rStepFunctionExecutionRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${pStackPrefix}-sf-iam-policy
+      Path: "/service/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              Fn::Join:
+                - ":"
+                -
+                  - "arn:aws:lambda"
+                  - Ref: "AWS::Region"
+                  - Ref: "AWS::AccountId"
+                  - "function"
+                  - !Sub ${pStackPrefix}-*
+      Roles:
+        -
+          Ref: "rStepFunctionExecutionRole"
+
+  rBuildSOEStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub ${pStackPrefix}-build-sf-sm
+      DefinitionString:
+        Fn::Sub:
+          - |-
+            {
+              "Comment": "SOE Baking Solution",
+              "StartAt": "Set Action",
+              "States": {
+                "Set Action": {
+                  "Type": "Pass",
+                  "Result": "Build",
+                  "ResultPath": "$.Action",
+                  "Next": "Trigger Build"
+                },
+                "Trigger Build": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${TriggerBuildFunctionArn}",
+                  "Next": "Wait 1 Minutes for Build"
+                },
+                "Wait 1 Minutes for Build": {
+                  "Type": "Wait",
+                  "Seconds": 60,
+                  "Next": "Get Build Status"
+                },
+                "Get Build Status": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${CheckBuildFuntionArn}",
+                  "Next": "Build Status?"
+                },
+                "Build Status?": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.BuildStatus",
+                      "StringEquals": "failed",
+                      "Next": "Notify Failure"
+                    },
+                    {
+                      "Variable": "$.BuildStatus",
+                      "StringEquals": "succeeded",
+                      "Next": "Trigger Test"
+                    },
+                    {
+                      "Variable": "$.BuildStatus",
+                      "StringEquals": "running",
+                      "Next": "Wait 1 Minutes for Build"
+                    },
+                    {
+                      "Variable": "$.BuildStatus",
+                      "StringEquals": "unknown",
+                      "Next": "Notify Failure"
+                    }
+                  ]
+                },
+                "Notify Failure": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${NotifyFailureFunctionArn}",
+                  "Next": "Build Failed"
+                },
+                "Build Failed": {
+                  "Type": "Fail",
+                  "Cause": "Deployment Failed",
+                  "Error": "Deployment Failed"
+                },
+                "Trigger Test": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${TriggerTestFunctionArn}",
+                  "Next": "Wait 1 Minutes for Test"
+                },
+                "Wait 1 Minutes for Test": {
+                  "Type": "Wait",
+                  "Seconds": 60,
+                  "Next": "Get Test Status"
+                },
+                "Get Test Status": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${CheckTestFunctionArn}",
+                  "Next": "Test Status?"
+                },
+                "Test Status?": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.TestStatus",
+                      "StringEquals": "failed",
+                      "Next": "Notify Failure"
+                    },
+                    {
+                      "Variable": "$.TestStatus",
+                      "StringEquals": "succeeded",
+                      "Next": "Terminate Test Instance"
+                    },
+                    {
+                      "Variable": "$.TestStatus",
+                      "StringEquals": "skipped",
+                      "Next": "Terminate Test Instance"
+                    },
+                    {
+                      "Variable": "$.TestStatus",
+                      "StringEquals": "running",
+                      "Next": "Wait 1 Minutes for Test"
+                    },
+                    {
+                      "Variable": "$.TestStatus",
+                      "StringEquals": "unknown",
+                      "Next": "Notify Failure"
+                    }
+                  ]
+                },
+                "Terminate Test Instance": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${TerminateTestEC2FunctionArn}",
+                  "Next": "Update Next AMI"
+                },
+                "Update Next AMI": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${UpdateNextAmiFunctionArn}",
+                  "Next": "Notify Build Success"
+                },
+                "Notify Build Success": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${NotifySuccessFunctionArn}",
+                  "Next": "Build Succeeded"
+                },
+                "Build Succeeded": {
+                  "Type": "Succeed"
+                }
+              }
+            }
+          - TriggerBuildFunctionArn: !GetAtt [ rTriggerBuildFunction, Arn ]
+            CheckBuildFuntionArn: !GetAtt [ rCheckBuildFuntion, Arn ]
+            NotifyFailureFunctionArn: !GetAtt [ rNotifyFailureFunction, Arn ]
+            TriggerTestFunctionArn: !GetAtt [ rTriggerTestFunction, Arn ]
+            CheckTestFunctionArn: !GetAtt [ rCheckTestFunction, Arn ]
+            TerminateTestEC2FunctionArn: !GetAtt [ rTerminateTestEC2Function, Arn ]
+            UpdateNextAmiFunctionArn: !GetAtt [ rUpdateNextAmiFunction, Arn ]
+            NotifySuccessFunctionArn: !GetAtt [  rNotifySuccessFunction, Arn ]
+      RoleArn: !GetAtt [ rStepFunctionExecutionRole, Arn ]
+
+  rReleaseSOEStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub ${pStackPrefix}-release-sf-sm
+      DefinitionString:
+        Fn::Sub:
+          - |-
+            {
+              "Comment": "SOE Release Solution",
+              "StartAt": "Set Action",
+              "States": {
+                "Set Action": {
+                  "Type": "Pass",
+                  "Result": "Release",
+                  "ResultPath": "$.Action",
+                  "Next": "Manage IAM Role"
+                },
+                "Manage IAM Role": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${ManageIAMRolelambdaArn}",
+                  "Next": "Publish AMI"
+                },
+                "Publish AMI": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${PublishFunctionArn}",
+                  "Next": "Purge AMIs"
+                },
+                "Purge AMIs": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${PurgeFunctionArn}",
+                  "Next": "Notify Release Success"
+                },
+                "Notify Release Success": {
+                  "Type": "Task",
+                  "TimeoutSeconds": 300,
+                  "Resource": "${NotifySuccessFunctionArn}",
+                  "Next": "Build Succeeded"
+                },
+                "Build Succeeded": {
+                  "Type": "Succeed"
+                }
+              }
+            }
+          - ManageIAMRolelambdaArn: !GetAtt [ rManageIAMRoleFunction, Arn ]
+            PublishFunctionArn: !GetAtt [ rPublishFunction, Arn ]
+            PurgeFunctionArn: !GetAtt [  rPurgeFunction, Arn ]
+            NotifySuccessFunctionArn: !GetAtt [  rNotifySuccessFunction, Arn ]
+      RoleArn: !GetAtt [ rStepFunctionExecutionRole, Arn ]
+
+
+  ################################################ Lambda Section ##############################################
+
+  rLambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: '/service/'
+      RoleName: !Sub ${pStackPrefix}-lambda-iam-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonSSMAutomationRole
+        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
+
+  rLambdaFunctionRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${pStackPrefix}-lambda-iam-policy
+      Path: "/service/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:DescribeLogStreams
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:*
+            Resource:
+              - Fn::Join:
+                - ':'
+                -
+                  - 'arn:aws:logs'
+                  - Ref: 'AWS::Region'
+                  - Ref: 'AWS::AccountId'
+                  - log-group:/aws/lambda/*:*:*
+              - Fn::Join:
+                - ':'
+                -
+                  - 'arn:aws:logs'
+                  - Ref: 'AWS::Region'
+                  - Ref: 'AWS::AccountId'
+                  - log-group:/ami/baking/*:*:*
+          # -
+          #   Effect: Allow
+          #   Action:
+          #     - iam:PassRole
+          #     - sts:AssumeRole
+          #   Resource:
+          #     - Fn::Join:
+          #       - ":"
+          #       -
+          #         - "arn:aws:iam:"
+          #         - !Sub ${pOrganisationAccountID}
+          #         - !Sub "role/${pOrganisationAccountRole}"
+          -
+            Effect: "Allow"
+            Action:
+              - iam:*
+            Resource:
+              - Fn::Join:
+                - ":"
+                -
+                  - "arn:aws:iam:"
+                  - Ref: "AWS::AccountId"
+                  - !Sub "role/${pStackPrefix}-*"
+              - Fn::Join:
+                - ":"
+                -
+                  - "arn:aws:iam:"
+                  - Ref: "AWS::AccountId"
+                  - !Sub "role/service/${pStackPrefix}-*"
+              - Fn::Join:
+                - ":"
+                -
+                  - "arn:aws:iam:"
+                  - Ref: "AWS::AccountId"
+                  - !Sub "policy/${pStackPrefix}-*"
+              - Fn::Join:
+                - ":"
+                -
+                  - "arn:aws:iam:"
+                  - Ref: "AWS::AccountId"
+                  - !Sub "policy/service/${pStackPrefix}-*"
+          -
+            Effect: "Allow"
+            Action:
+              - iam:ListRoles
+            Resource: "*"
+          -
+            Effect: "Allow"
+            Action:
+              - ssm:*
+            Resource:
+              - Fn::Join:
+                - ":"
+                -
+                  - "arn:aws:ssm"
+                  - Ref: 'AWS::Region'
+                  - Ref: "AWS::AccountId"
+                  - !Sub "*/${pStackPrefix}-*"
+          -
+            Effect: "Allow"
+            Action:
+              - ec2:CreateImage
+              - ec2:CopyImage
+              - ec2:DeregisterImage
+              - ec2:DescribeImageAttribute
+              - ec2:DescribeImages
+              - ec2:DeleteSnapshot
+              - ec2:StartInstances
+              - ec2:RunInstances
+              - ec2:StopInstances
+              - ec2:TerminateInstances
+              - ec2:DescribeInstanceStatus
+              - ec2:DescribeInstances
+              - ec2:CreateTags
+              - ec2:DeleteTags
+              - ec2:DescribeTags
+            Resource: '*'
+          -
+            Effect: "Allow"
+            Action:
+              - ec2:ModifyImageAttribute
+            Resource: '*'
+          -
+            Effect: "Allow"
+            Action:
+              - sns:Publish
+            Resource:
+              - Fn::Join:
+                - ":"
+                -
+                  - "arn:aws:sns"
+                  - Ref: 'AWS::Region'
+                  - Ref: "AWS::AccountId"
+                  - !Sub ${pStackPrefix}-*
+              - arn:aws:sns:*:*:Automation*
+          -
+            Effect: "Allow"
+            Action:
+              - inspector:Describe*
+              - inspector:List*
+            Resource: '*'
+      Roles:
+        -
+          Ref: "rLambdaFunctionRole"
+
+  rManageIAMRoleFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: manage_role_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/manage_role
+      Environment:
+        Variables:
+          SolutionNaming: !Sub ${pStackPrefix}
+          Region: !Ref "AWS::Region"
+          SOEType: !Sub ${pOS}-${pOSType}
+          AccountIDs: !Ref pMemberAccountId
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-manage-iam-role-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-manage-iam-role-lambda
+
+  rTriggerBuildFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: trigger_build_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/trigger_build
+      Environment:
+        Variables:
+          SolutionNaming: !Sub ${pStackPrefix}
+          Region: !Ref "AWS::Region"
+          SSMDocument: !If [LnxOS, !Ref rAutomationDocBuildLinuxAMI, !Ref "AWS::NoValue"]
+          SOEType: !Sub ${pOS}-${pOSType}
+          AMIPattern: !Sub ${pAMIPattern}
+          OverrideAMI: !Sub ${pOverrideAMI}
+          AMIOwner: !Sub ${pAMIOwner}
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-trigger-build-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-trigger-build-lambda
+
+  rCheckBuildFuntion:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: check_build_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/check_build
+      Environment:
+        Variables:
+          Region: !Ref "AWS::Region"
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-check-build-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-check-build-lambda
+
+  rNotifyFailureFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: notify_failure_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/notify_failure
+      Environment:
+        Variables:
+          Region: !Ref "AWS::Region"
+          SolutionNaming: !Sub ${pStackPrefix}
+          OSType: !Sub ${pOSType}
+          OS: !Sub ${pOS}
+          SlackChannel: !Sub ${pSlackChannel}
+          SlackURL: !Sub ${pSlackURL}
+          SlackIcon: !Sub ${pSlackIcon}
+          EnableSlackIntegration: !Sub ${pUseSlackIntegration}
+          Environment: !Sub ${pEnvironment}
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-notify-failure-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-notify-failure-lambda
+
+  rTriggerTestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: trigger_test_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/trigger_test
+      Environment:
+        Variables:
+          Region: !Ref "AWS::Region"
+          SSMDocument: !If [LnxOS, !Ref rAutomationDocTestLinuxAMI, !Ref "AWS::NoValue"]
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-trigger-test-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-trigger-test-lambda
+
+  rCheckTestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: check_test_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/check_test
+      Environment:
+        Variables:
+          Region: !Ref "AWS::Region"
+          VulnerabilityExceptionsList: !Sub ${pVulnerabilityExceptionsList}
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-check-test-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-check-test-lambda
+
+  rTerminateTestEC2Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: terminate_test_ec2_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/terminate_test_ec2
+      Environment:
+        Variables:
+          Region: !Ref "AWS::Region"
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-terminate-test-ec2-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-terminate-test-ec2-lambda
+
+  rUpdateNextAmiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: update_next_ami_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/update_next
+      Environment:
+        Variables:
+          Region: !Ref "AWS::Region"
+          NextAMIParam: !Ref rSSMParamNextAMI
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-update-next-ami-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-update-next-ami-lambda
+
+  rPublishFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: publish_ami_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/publish
+      Environment:
+        Variables:
+          Region: !Ref "AWS::Region"
+          NextAMIParam: !Ref rSSMParamNextAMI
+          LatestAMIParam: !Ref rSSMParamLatestAMI
+          AccountIDs: !Ref pMemberAccountId
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-publish-ami-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-publish-ami-lambda
+
+  rPurgeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: purge_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/purge
+      Environment:
+        Variables:
+          Region: !Ref "AWS::Region"
+          SSMPath: !Sub /${pStackPrefix}/${pOS}-${pOSType}
+          SOEType: !Sub ${pOS}-${pOSType}
+          SolutionNaming: !Sub ${pStackPrefix}
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-purge-ami-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-purge-ami-lambda
+
+  rNotifySuccessFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: notify_success_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/notify_success
+      Environment:
+        Variables:
+          Region: !Ref "AWS::Region"
+          SolutionNaming: !Sub ${pStackPrefix}
+          OSType: !Sub ${pOSType}
+          OS: !Sub ${pOS}
+          SlackChannel: !Sub ${pSlackChannel}
+          SlackURL: !Sub ${pSlackURL}
+          SlackIcon: !Sub ${pSlackIcon}
+          EnableSlackIntegration: !Sub ${pUseSlackIntegration}
+          Environment: !Sub ${pEnvironment}
+          VulnerabilityExceptionsList: !Sub ${pVulnerabilityExceptionsList}
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-notify-success-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-notify-success-lambda
+
+  rNotifyCloudwatchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: notify_cloudwatch_function.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: ../app/src/notify_cloudwatch
+      Environment:
+        Variables:
+          Region: !Ref "AWS::Region"
+          SolutionNaming: !Sub ${pStackPrefix}
+          OSType: !Sub ${pOSType}
+          OS: !Sub ${pOS}
+          SlackChannel: !Sub ${pSlackChannel}
+          SlackURL: !Sub ${pSlackURL}
+          SlackIcon: !Sub ${pSlackIcon}
+          EnableSlackIntegration: !Sub ${pUseSlackIntegration}
+          Environment: !Sub ${pEnvironment}
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pStackPrefix}-notify-cloudwatch-lambda
+      Tags:
+        name: !Sub ${pStackPrefix}-notify-cloudwatch-lambda
+
+  ################################################ SSM Automation Section ############################
+
+  rSSMParamNextAMI:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${pStackPrefix}/${pOS}-${pOSType}/nextAmi
+      Description: AMI ID for the latest AMI build for the next release
+      Type: String
+      Value: 'blank'
+
+  rSSMParamLatestAMI:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${pStackPrefix}/${pOS}-${pOSType}/latestAmi
+      Description: AMI ID for the latest AMI released
+      Type: String
+      Value: 'blank'
+
+  ## Create instance profile SSM instance
+  rSSMInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/service/"
+      Roles:
+        - !Ref rSSMInstanceRole
+      InstanceProfileName: !Sub ${pStackPrefix}-ssm-instance-iam-role
+
+  rSSMInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/service/"
+      RoleName: !Sub ${pStackPrefix}-ssm-instance-iam-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - ssm.amazonaws.com
+                - ec2.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
+      Policies:
+        -
+          PolicyName: "S3Access"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "s3:*"
+                Resource:
+                - !Sub arn:aws:s3:::${pInspecTestFilesBucket}
+                - !Sub arn:aws:s3:::${pInspecTestFilesBucket}/*
+
+  rSSMInstanceRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${pStackPrefix}-ssm-instance-iam-policy
+      Path: "/service/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - cloudwatch:PutMetricData
+              - ec2:DescribeInstanceStatus
+              - logs:*
+              - ssm:*
+              - ec2messages:*
+              - s3:PutObject
+              - s3:GetObject
+              - s3:AbortMultipartUpload
+              - s3:ListMultipartUploadParts
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - ec2:CreateTags
+              - inspector:StartAssessmentRun
+            Resource: "*"
+      Roles:
+        -
+          Ref: "rSSMInstanceRole"
+
+  rInspectorResourceGroup:
+    Type: "AWS::Inspector::ResourceGroup"
+    Condition: LnxOS
+    Properties:
+      ResourceGroupTags:
+        -
+          Key: "Scanning"
+          Value: !Sub "${pStackPrefix}-latest"
+
+  rInspectorAssessmentTarget:
+    Type: "AWS::Inspector::AssessmentTarget"
+    Condition: LnxOS
+    Properties:
+      AssessmentTargetName: !Sub ${pStackPrefix}-i-target
+      ResourceGroupArn : !GetAtt [rInspectorResourceGroup, Arn]
+
+  rInspectorAssessmentTemplate:
+    Type: "AWS::Inspector::AssessmentTemplate"
+    Condition: LnxOS
+    Properties:
+      AssessmentTargetArn: !GetAtt [rInspectorAssessmentTarget, Arn]
+      AssessmentTemplateName: !Sub  ${pStackPrefix}-i-template
+      DurationInSeconds: !Sub ${pVulnerabilityScanDuration}
+      RulesPackageArns:
+        - "arn:aws:inspector:ap-southeast-2:454640832652:rulespackage/0-D5TGAxiR"
+        - "arn:aws:inspector:ap-southeast-2:454640832652:rulespackage/0-P8Tel2Xj"
+        - "arn:aws:inspector:ap-southeast-2:454640832652:rulespackage/0-Vkd2Vxjq"
+        - "arn:aws:inspector:ap-southeast-2:454640832652:rulespackage/0-asL6HRgN"
+
+  ################################################ SSM Documents Section ##############################################
+
+  # Build Step: UpdateOS SSM Command Document
+  rCmdDocUpdateOS:
+    Type: "AWS::SSM::Document"
+    Properties:
+      DocumentType: "Command"
+      Content:
+        schemaVersion: '2.2'
+        description: "Updates the OS using Amazon provided aws-update-linux-instance script (Linux Instance only)"
+        parameters:
+          PreUpdateScript:
+            type: String
+            description: (Optional) URL of a script to run before updates are applied. Default (\"none\") is to not run a script.
+            default: none
+          PostUpdateScript:
+            type: String
+            description: (Optional) URL of a script to run after package updates are applied. Default (\"none\") is to not run a script.
+            default: none
+          IncludePackages:
+            type: String
+            description: (Optional) Only update these named packages. By default (\"all\"), all available updates are applied.
+            default: none
+          ExcludePackages:
+            type: String
+            description: (Optional) Names of packages to hold back from updates, under all conditions. By default (\"none\"), no package is excluded.
+            default: none
+        mainSteps:
+        - name: updateOS
+          action: aws:runShellScript
+          precondition:
+            StringEquals:
+            - platformType
+            - Linux
+          inputs:
+            runCommand:
+            - "set -e"
+            - "[ -x \"$(which wget)\" ] && get_contents='wget $1 -O -'"
+            - "[ -x \"$(which curl)\" ] && get_contents='curl -s -f $1'"
+            - "eval $get_contents https://aws-ssm-downloads-us-east-1.s3.amazonaws.com/scripts/aws-update-linux-instance\
+              \ > /var/lib/amazon/ssm/aws-update-linux-instance"
+            - "chmod +x /var/lib/amazon/ssm/aws-update-linux-instance"
+            - "/var/lib/amazon/ssm/aws-update-linux-instance --pre-update-script '{{PreUpdateScript}}'\
+              \ --post-update-script '{{PostUpdateScript}}' --include-packages '{{IncludePackages}}'\
+              \ --exclude-packages '{{ExcludePackages}}' 2>&1 | tee /tmp/aws-update-linux-instance.log"
+            - "rm -rf /var/lib/amazon/ssm/aws-update-linux-instance"
+            - "echo 'ssm-agent:'"
+            - "yum info amazon-ssm-agent | grep Version"
+            - "echo 'Python:'"
+            - "python --version"
+            - echo
+            - echo 'yum list available:'
+            - yum list available
+
+
+  # Build Step: Installs the CodeDeploy Agent
+  rCmdDocInstallCodeDeploy:
+    Type: "AWS::SSM::Document"
+    Properties:
+      DocumentType: "Command"
+      Content:
+        schemaVersion: '2.2'
+        description: "Installs the CodeDeploy Agent"
+        mainSteps:
+        - name: installCodeDeploy
+          action: aws:runShellScript
+          precondition:
+            StringEquals:
+            - platformType
+            - Linux
+          inputs:
+            runCommand:
+            - "set -e"
+            - echo 'Installing CodeDeploy Agent...'
+            - sudo yum install -y ruby
+            - cd ~
+            - wget https://aws-codedeploy-ap-southeast-2.s3.amazonaws.com/latest/install
+            - chmod +x ./install
+            - sudo ./install auto
+            - sudo service codedeploy-agent status
+            - yum info codedeploy-agent | grep Version
+            - rm ./install
+
+  # Build Step: Sets up a customized login banner
+  rCmdDocSetupBanner:
+    Type: "AWS::SSM::Document"
+    Properties:
+      DocumentType: "Command"
+      Content:
+        schemaVersion: '2.2'
+        description: "Sets up a login banner in the instance"
+        mainSteps:
+        - name: configureBanner
+          action: aws:runShellScript
+          precondition:
+            StringEquals:
+            - platformType
+            - Linux
+          inputs:
+            runCommand:
+            - "set -e"
+            - echo CgpGaWdodCBCdWdzICAgICAgICAgICAgICAgICAgICAgIHwgICAgIHwKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBcXF9WXy8vCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgXC89fD1cLwogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBbPXY9XQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgX19cX19fL19fX19fCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8uLlsgIF9fX19fICBdCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgL18gIFsgWyAgTSAvXSBdCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLi4vLlsgWyBNIC9AXSBdCiAgICAgICAgICAgICAgICAgICAgICAgICAgIDwtLT5bX1sgW00gL0AvXSBdCiAgICAgICAgICAgICAgICAgICAgICAgICAgLy4uLyBbLlsgWyAvQC8gXSBdCiAgICAgX19fX19fX19fX19fX19fX19dXCAvX18vICBbX1sgWy9ALyBDXSBdCiAgICA8X19fX19fX19fX19fX19fX18+PjAtLS1dICBbPVwgXEAvIEMgLyAvCiAgICAgICBfX18gICAgICBfX18gICBdLzAwMG8gICAvX19cIFwgQyAvIC8KICAgICAgICAgIFwgICAgLyAgICAgICAgICAgICAgLy4uLi5cIFxfLyAvCiAgICAgICAuLi4uXHx8Ly4uLi4gICAgICAgICAgIFtfX18vPVxfX18vCiAgICAgIC4gICAgLiAgLiAgICAuICAgICAgICAgIFsuLi5dIFsuLi5dCiAgICAgLiAgICAgIC4uICAgICAgLiAgICAgICAgIFtfX18vIFxfX19dCiAgICAgLiAgICAwIC4uIDAgICAgLiAgICAgICAgIDwtLS0+IDwtLS0+CiAgL1wvXC4gICAgLiAgLiAgICAuL1wvXCAgICAgIFsuLl0gICBbLi5dCiAvIC8gLyAuLi4vfCAgfFwuLi4gXCBcIFwgICAgX1tfX10gICBbX19dXwovIC8gLyAgICAgICBcLyAgICAgICBcIFwgXCAgW19fX18+ICAgPF9fX19dCgogKioqIEJ1aWx0IGZyb20gQ0lTIEFtYXpvbiBMaW51eCAyIEFNSSAqKioKClRoaXMgY29tcHV0ZXIgc3lzdGVtIGlzIGZvciBhdXRob3JpemVkIHVzZSBvbmx5LgpBbGwgYWN0aXZpdHkgaXMgbG9nZ2VkIGFuZCByZWd1bGFybHkgY2hlY2tlZCBieQp0aGUgUGxhdGZvcm0gVGVhbS4gQW55IHVuYXV0aG9yaXplZCBhY3Rpdml0eSB3aXRoCnRoZSBzeXN0ZW0gb3IgdGhlIG5ldHdvcmsgd2lsbCBiZSByZXBvcnRlZC4KCkJ1ZyBSZXBvcnQ6IFBsZWFzZSByYWlzZSBhIEpJUkEgVGlja2V0IHdpdGggdGhlIFBsYXRmb3JtIFRlYW0KCg== | base64 --decode > /etc/motd
+            - sudo chown root:root /etc/motd
+            - sudo update-motd --disable
+
+  # Build Step: Install AWS Corretto
+  rCmdDocInstallCorretto:
+    Type: "AWS::SSM::Document"
+    Properties:
+      DocumentType: "Command"
+      Content:
+        schemaVersion: '2.2'
+        description: "Installs Corretto JRE Runtime"
+        mainSteps:
+        - name: installAWSCorretto
+          action: aws:runShellScript
+          precondition:
+            StringEquals:
+            - platformType
+            - Linux
+          inputs:
+            runCommand:
+            - "set -e"
+            - echo 'Install java (AWS Corretto JRE)'
+            - sudo amazon-linux-extras enable corretto8
+            - sudo yum install -y java-1.8.0-amazon-corretto
+
+
+  # Build Step: InSpec requirements
+  rSetupInSpecRequirements:
+    Type: "AWS::SSM::Document"
+    Properties:
+      DocumentType: "Command"
+      Content:
+        schemaVersion: '2.2'
+        description: "Setup Inspec Test Requirements"
+        mainSteps:
+        - name: setupInspecRequirements
+          action: aws:runShellScript
+          precondition:
+            StringEquals:
+            - platformType
+            - Linux
+          inputs:
+            runCommand:
+            - "set -e"
+            - echo 'Cleaning up the gems...'
+            - sudo gem cleanup
+            - sudo gem list
+
+  # Build Step: Output Versions
+  rCmdDocOutputVersion:
+    Type: "AWS::SSM::Document"
+    Properties:
+      DocumentType: "Command"
+      Content:
+        schemaVersion: '2.2'
+        description: "Output Softwares Versions"
+        mainSteps:
+        - name: outputVersion
+          action: aws:runShellScript
+          precondition:
+            StringEquals:
+            - platformType
+            - Linux
+          inputs:
+            runCommand:
+            - set -e -x
+            - ec2-metadata -i
+            - codedeploy=$(yum info codedeploy-agent | grep Version)
+            - echo "CodeDeploy Agent $codedeploy"
+            - ssm=$(yum info amazon-ssm-agent | grep Version)
+            - echo "SSM Agent $ssm"
+            - awslogs=$(yum info awslogs | grep Version)
+            - echo "CloudWatch Agent $awslogs"
+            - inspector=$(yum info awsagent | grep Version)
+            - echo "Inspector Agent $inspector"
+            - corretto=$(yum info java-1.8.0-amazon-corretto-devel | grep Version)
+            - echo "AWS Corretto $corretto"
+            - kernel=$(uname -r)
+            - echo "Kernel Version $kernel"
+
+  # Build Step: Automation Doc to Create AMI
+  rAutomationDocBuildLinuxAMI:
+    Type: "AWS::SSM::Document"
+    Condition: LnxOS
+    Properties:
+      DocumentType: "Automation"
+      Content:
+        description: Systems Manager Automation – Patch AMI and Update SSM Param
+        schemaVersion: '0.3'
+        parameters:
+          sourceAMIid:
+            type: String
+            description: AMI to patch
+            #default: ami-43874721
+          InstanceIamRole:
+            type: String
+            description: '(Required) The name of the instance profile that enables Systems Manager (SSM) to manage the instance.'
+            default: !Ref rSSMInstanceProfile
+          InstanceType:
+            type: String
+            description: '(Required) Type of instance to launch as the workspace host. Instance types vary by region. Default is m5.large.'
+            default: m5.large
+          PreUpdateScript:
+            type: String
+            description: '(Optional) URL of a script to run before updates are applied. Default (\"none\") is to not run a script.'
+            default: none
+          PostUpdateScript:
+            type: String
+            description: '(Optional) URL of a script to run after package updates are applied. Default (\"none\") is to not run a script.'
+            default: none
+          IncludePackages:
+            type: String
+            description: '(Optional) Only update these named packages. By default (\"all\"), all available updates are applied.'
+            default: all
+          ExcludePackages:
+            type: String
+            description: '(Optional) Names of packages to hold back from updates, under all conditions. By default (\"none\"), no package is excluded.'
+            default: none
+          SolutionSOEType:
+            type: String
+            description: '(Required) Solution and SOE Type name.'
+            default: !Sub ${pStackPrefix}
+        mainSteps:
+        - name: startInstances
+          action: aws:runInstances
+          timeoutSeconds: 1200
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            ImageId: "{{ sourceAMIid }}"
+            InstanceType: "{{ InstanceType }}"
+            # this user data installs SSM Agent on the instance. Since we have the agent baked in,
+            # this line is not needed unless used on an AMI that does not come with SSM Agent
+            UserData: IyEvYmluL2Jhc2gNCg0KZnVuY3Rpb24gZ2V0X2NvbnRlbnRzKCkgew0KICAgIGlmIFsgLXggIiQod2hpY2ggY3VybCkiIF07IHRoZW4NCiAgICAgICAgY3VybCAtcyAtZiAiJDEiDQogICAgZWxpZiBbIC14ICIkKHdoaWNoIHdnZXQpIiBdOyB0aGVuDQogICAgICAgIHdnZXQgIiQxIiAtTyAtDQogICAgZWxzZQ0KICAgICAgICBkaWUgIk5vIGRvd25sb2FkIHV0aWxpdHkgKGN1cmwsIHdnZXQpIg0KICAgIGZpDQp9DQoNCnJlYWRvbmx5IElERU5USVRZX1VSTD0iaHR0cDovLzE2OS4yNTQuMTY5LjI1NC8yMDE2LTA2LTMwL2R5bmFtaWMvaW5zdGFuY2UtaWRlbnRpdHkvZG9jdW1lbnQvIg0KcmVhZG9ubHkgVFJVRV9SRUdJT049JChnZXRfY29udGVudHMgIiRJREVOVElUWV9VUkwiIHwgYXdrIC1GXCIgJy9yZWdpb24vIHsgcHJpbnQgJDQgfScpDQpyZWFkb25seSBERUZBVUxUX1JFR0lPTj0idXMtZWFzdC0xIg0KcmVhZG9ubHkgUkVHSU9OPSIke1RSVUVfUkVHSU9OOi0kREVGQVVMVF9SRUdJT059Ig0KDQpyZWFkb25seSBTQ1JJUFRfTkFNRT0iYXdzLWluc3RhbGwtc3NtLWFnZW50Ig0KcmVhZG9ubHkgU0NSSVBUX1VSTD0iaHR0cHM6Ly9hd3Mtc3NtLWRvd25sb2Fkcy0kUkVHSU9OLnMzLmFtYXpvbmF3cy5jb20vc2NyaXB0cy8kU0NSSVBUX05BTUUiDQoNCmNkIC90bXANCkZJTEVfU0laRT0wDQpNQVhfUkVUUllfQ09VTlQ9Mw0KUkVUUllfQ09VTlQ9MA0KDQp3aGlsZSBbICRSRVRSWV9DT1VOVCAtbHQgJE1BWF9SRVRSWV9DT1VOVCBdIDsgZG8NCiAgZWNobyBBV1MtVXBkYXRlTGludXhBbWk6IERvd25sb2FkaW5nIHNjcmlwdCBmcm9tICRTQ1JJUFRfVVJMDQogIGdldF9jb250ZW50cyAiJFNDUklQVF9VUkwiID4gIiRTQ1JJUFRfTkFNRSINCiAgRklMRV9TSVpFPSQoZHUgLWsgL3RtcC8kU0NSSVBUX05BTUUgfCBjdXQgLWYxKQ0KICBlY2hvIEFXUy1VcGRhdGVMaW51eEFtaTogRmluaXNoZWQgZG93bmxvYWRpbmcgc2NyaXB0LCBzaXplOiAkRklMRV9TSVpFDQogIGlmIFsgJEZJTEVfU0laRSAtZ3QgMCBdOyB0aGVuDQogICAgYnJlYWsNCiAgZWxzZQ0KICAgIGlmIFtbICRSRVRSWV9DT1VOVCAtbHQgTUFYX1JFVFJZX0NPVU5UIF1dOyB0aGVuDQogICAgICBSRVRSWV9DT1VOVD0kKChSRVRSWV9DT1VOVCsxKSk7DQogICAgICBlY2hvIEFXUy1VcGRhdGVMaW51eEFtaTogRmlsZVNpemUgaXMgMCwgcmV0cnlDb3VudDogJFJFVFJZX0NPVU5UDQogICAgZmkNCiAgZmkgDQpkb25lDQoNCmlmIFsgJEZJTEVfU0laRSAtZ3QgMCBdOyB0aGVuDQogIGNobW9kICt4ICIkU0NSSVBUX05BTUUiDQogIGVjaG8gQVdTLVVwZGF0ZUxpbnV4QW1pOiBSdW5uaW5nIFVwZGF0ZVNTTUFnZW50IHNjcmlwdCBub3cgLi4uLg0KICAuLyIkU0NSSVBUX05BTUUiIC0tcmVnaW9uICIkUkVHSU9OIg0KZWxzZQ0KICBlY2hvIEFXUy1VcGRhdGVMaW51eEFtaTogVW5hYmxlIHRvIGRvd25sb2FkIHNjcmlwdCwgcXVpdHRpbmcgLi4uLg0KZmkNCg==
+            MinInstanceCount: 1
+            MaxInstanceCount: 1
+            IamInstanceProfileName: "{{ InstanceIamRole }}"
+            TagSpecifications:
+            - ResourceType: instance
+              Tags:
+              - Key: Name
+                Value: SOE-Build-AMI
+        - name: updateOS
+          action: aws:runCommand
+          maxAttempts: 1
+          timeoutSeconds: 600
+          onFailure: Abort
+          inputs:
+            DocumentName: !Ref rCmdDocUpdateOS
+            InstanceIds:
+              - "{{ startInstances.InstanceIds }}"
+            CloudWatchOutputConfig:
+              CloudWatchLogGroupName: !Ref rAutomationBuildLinuxAMILogGroup
+              CloudWatchOutputEnabled: true
+        - name: installInspectorAgent
+          action: aws:runCommand
+          maxAttempts: 1
+          timeoutSeconds: 600
+          onFailure: Abort
+          inputs:
+            DocumentName: AmazonInspector-ManageAWSAgent
+            InstanceIds:
+              - "{{ startInstances.InstanceIds }}"
+            Parameters:
+              Operation: "Install"
+            CloudWatchOutputConfig:
+              CloudWatchLogGroupName: !Ref rAutomationBuildLinuxAMILogGroup
+              CloudWatchOutputEnabled: true
+        - name: installCodeDeployAgent
+          action: aws:runCommand
+          maxAttempts: 1
+          timeoutSeconds: 600
+          onFailure: Abort
+          inputs:
+            DocumentName: !Ref rCmdDocInstallCodeDeploy
+            InstanceIds:
+              - "{{ startInstances.InstanceIds }}"
+            CloudWatchOutputConfig:
+              CloudWatchLogGroupName: !Ref rAutomationBuildLinuxAMILogGroup
+              CloudWatchOutputEnabled: true
+        - name: installCloudWatchAgent
+          action: aws:runCommand
+          maxAttempts: 1
+          timeoutSeconds: 600
+          onFailure: Abort
+          inputs:
+            DocumentName: AWS-ConfigureAWSPackage
+            InstanceIds:
+              - "{{ startInstances.InstanceIds }}"
+            Parameters:
+              name: "AmazonCloudWatchAgent"
+              action: "Install"
+              version: "latest"
+            CloudWatchOutputConfig:
+              CloudWatchLogGroupName: !Ref rAutomationBuildLinuxAMILogGroup
+              CloudWatchOutputEnabled: true
+        # TODO: remove setupIPTablesAllowAll when deepsec is rolled out in APO-884
+        - name: setupIPTablesAllowAll
+          action: aws:runCommand
+          maxAttempts: 1
+          timeoutSeconds: 600
+          onFailure: Abort
+          inputs:
+            DocumentName: AWS-RunShellScript
+            InstanceIds:
+              - "{{ startInstances.InstanceIds }}"
+            Parameters:
+              commands:
+                - set -e -x
+                - echo 'Allowing all traffic from IP tables...'
+                - sudo iptables -P INPUT ACCEPT
+                - echo 'Saving IPv4 configuration...'
+                - sudo sh -c 'iptables-save > /etc/sysconfig/iptables'
+                - echo 'Making changes permanent...'
+                - sudo systemctl enable iptables.service
+            CloudWatchOutputConfig:
+              CloudWatchLogGroupName: !Ref rAutomationBuildLinuxAMILogGroup
+              CloudWatchOutputEnabled: true
+        - name: configureLoginBanner
+          action: aws:runCommand
+          maxAttempts: 1
+          timeoutSeconds: 600
+          onFailure: Abort
+          inputs:
+            DocumentName: !Ref rCmdDocSetupBanner
+            InstanceIds:
+              - "{{ startInstances.InstanceIds }}"
+            CloudWatchOutputConfig:
+              CloudWatchLogGroupName: !Ref rAutomationBuildLinuxAMILogGroup
+              CloudWatchOutputEnabled: true
+        - name: installCorrettoJava
+          action: aws:runCommand
+          maxAttempts: 1
+          timeoutSeconds: 600
+          onFailure: Abort
+          inputs:
+            DocumentName: !Ref rCmdDocInstallCorretto
+            InstanceIds:
+              - "{{ startInstances.InstanceIds }}"
+            CloudWatchOutputConfig:
+              CloudWatchLogGroupName: !Ref rAutomationBuildLinuxAMILogGroup
+              CloudWatchOutputEnabled: true
+        - name: listSoftwaresVersions
+          action: aws:runCommand
+          maxAttempts: 1
+          timeoutSeconds: 600
+          onFailure: Abort
+          inputs:
+            DocumentName: !Ref rCmdDocOutputVersion
+            InstanceIds:
+              - "{{ startInstances.InstanceIds }}"
+            CloudWatchOutputConfig:
+              CloudWatchLogGroupName: !Ref rAutomationBuildLinuxAMILogGroup
+              CloudWatchOutputEnabled: true
+        - name: stopInstance
+          action: aws:changeInstanceState
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            InstanceIds:
+            - "{{ startInstances.InstanceIds }}"
+            DesiredState: stopped
+        - name: createImage
+          action: aws:createImage
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            InstanceId: "{{ startInstances.InstanceIds }}"
+            ImageName: "{{SolutionSOEType}} - {{global:DATE_TIME}}"
+            NoReboot: true
+            ImageDescription: "Platform Maintained SOE Image (From Source {{sourceAMIid}}) Build {{automation:EXECUTION_ID}}"
+        - name: createTags
+          action: "aws:createTags"
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            ResourceType: EC2
+            ResourceIds:
+              -
+               "{{ createImage.ImageId }}"
+            Tags:
+              -
+                Key: "SoeType"
+                Value: "{{SolutionSOEType}}"
+              -
+                Key: "SourceAMIid"
+                Value: "{{sourceAMIid}}"
+              -
+                Key: "DateCreated"
+                Value: "{{global:DATE_TIME}}"
+              -
+                Key: "SSMExecutionID"
+                Value: "{{automation:EXECUTION_ID}}"
+        - name: terminateInstance
+          action: aws:changeInstanceState
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            InstanceIds:
+            - "{{ startInstances.InstanceIds }}"
+            DesiredState: terminated
+        outputs:
+        - createImage.ImageId
+        - startInstances.InstanceIds
+
+  # Test Step: Run Vulnerability Scan
+  rCmdDocRunVulnerabilityScan:
+    Type: "AWS::SSM::Document"
+    Properties:
+      DocumentType: "Command"
+      Content:
+        schemaVersion: '2.2'
+        description: "Runs a vulnerability scan"
+        parameters:
+          InstanceTag:
+            type: String
+            description: EC2 Instance Tags
+          sourceAMIid:
+            type: String
+            description: Source AMI
+          InspectorAssessmentTemplateArn:
+            type: String
+            description: ARN of the Inspector Template
+          Region:
+            type: String
+            description: Assessment Region
+            default: "ap-southeast-2"
+        mainSteps:
+        - name: runVulnerabilityScan
+          action: aws:runShellScript
+          precondition:
+            StringEquals:
+            - platformType
+            - Linux
+          inputs:
+            runCommand:
+            - "set -e"
+            - "[ -x \"$(which wget)\" ] && get_contents='wget $1 -O -'"
+            - "[ -x \"$(which curl)\" ] && get_contents='curl -s -f $1'"
+            - "export instance_id=$(eval $get_contents http://169.254.169.254/latest/meta-data/instance-id)"
+            - "aws ec2 create-tags --resources $instance_id --tags Key=Scanning,Value='{{ InstanceTag }}' --region '{{ Region }}'"
+            - "aws inspector start-assessment-run --assessment-run-name {{ sourceAMIid }}_$instance_id --assessment-template-arn '{{ InspectorAssessmentTemplateArn }}' --region '{{ Region }}' --query 'assessmentRunArn'"
+
+  # Test Step: Automation Doc to Run Tests on AMI
+  rAutomationDocTestLinuxAMI:
+    Type: "AWS::SSM::Document"
+    Condition: LnxOS
+    Properties:
+      DocumentType: "Automation"
+      Content:
+        description: Systems Manager Automation – Patch AMI and Update SSM Param
+        schemaVersion: '0.3'
+        parameters:
+          sourceAMIid:
+            type: String
+            description: AMI to Test
+          InstanceIamRole:
+            type: String
+            description: '(Required) The name of the instance profile that enables Systems Manager (SSM) to manage the instance.'
+            default: !Ref rSSMInstanceProfile
+          InstanceType:
+            type: String
+            description: '(Optional) Type of instance to launch as the workspace host. Instance types vary by region. Default is m5.large.'
+            default: m5.large
+          InstanceTag:
+            type: String
+            description: '(Required) The EC2 instance tag set for instance and used by Inspector to scan the instance'
+            default: !Sub ${pStackPrefix}-latest
+          InspectorAssessmentTemplateArn:
+            type: String
+            description: '(Required) The ARN for the assement template used by inspector'
+            default: !GetAtt [rInspectorAssessmentTemplate, Arn]
+          InspecFilePath:
+            type: String
+            description: '(Required) The file path to the Inspec test'
+            default: !Sub "{\"path\":\"https://s3-ap-southeast-2.amazonaws.com/${pInspecTestFilesBucket}/inspec/linux_soe_compliance.rb\"}"
+          Region:
+            type: String
+            description: '(Required) Local AWS region'
+            default: !Ref "AWS::Region"
+          SleepDuration:
+            type: String
+            description: 'The amount of time the SSM automation needs to wait so that the Vulnerability scan can complete'
+            default: !Sub ${pVulnerabilityScanDuration}
+        mainSteps:
+        - name: startInstances
+          action: aws:runInstances
+          timeoutSeconds: 1200
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            ImageId: "{{ sourceAMIid }}"
+            InstanceType: "{{ InstanceType }}"
+            UserData: IyEvYmluL2Jhc2gNCg0KZnVuY3Rpb24gZ2V0X2NvbnRlbnRzKCkgew0KICAgIGlmIFsgLXggIiQod2hpY2ggY3VybCkiIF07IHRoZW4NCiAgICAgICAgY3VybCAtcyAtZiAiJDEiDQogICAgZWxpZiBbIC14ICIkKHdoaWNoIHdnZXQpIiBdOyB0aGVuDQogICAgICAgIHdnZXQgIiQxIiAtTyAtDQogICAgZWxzZQ0KICAgICAgICBkaWUgIk5vIGRvd25sb2FkIHV0aWxpdHkgKGN1cmwsIHdnZXQpIg0KICAgIGZpDQp9DQoNCnJlYWRvbmx5IElERU5USVRZX1VSTD0iaHR0cDovLzE2OS4yNTQuMTY5LjI1NC8yMDE2LTA2LTMwL2R5bmFtaWMvaW5zdGFuY2UtaWRlbnRpdHkvZG9jdW1lbnQvIg0KcmVhZG9ubHkgVFJVRV9SRUdJT049JChnZXRfY29udGVudHMgIiRJREVOVElUWV9VUkwiIHwgYXdrIC1GXCIgJy9yZWdpb24vIHsgcHJpbnQgJDQgfScpDQpyZWFkb25seSBERUZBVUxUX1JFR0lPTj0idXMtZWFzdC0xIg0KcmVhZG9ubHkgUkVHSU9OPSIke1RSVUVfUkVHSU9OOi0kREVGQVVMVF9SRUdJT059Ig0KDQpyZWFkb25seSBTQ1JJUFRfTkFNRT0iYXdzLWluc3RhbGwtc3NtLWFnZW50Ig0KcmVhZG9ubHkgU0NSSVBUX1VSTD0iaHR0cHM6Ly9hd3Mtc3NtLWRvd25sb2Fkcy0kUkVHSU9OLnMzLmFtYXpvbmF3cy5jb20vc2NyaXB0cy8kU0NSSVBUX05BTUUiDQoNCmNkIC90bXANCkZJTEVfU0laRT0wDQpNQVhfUkVUUllfQ09VTlQ9Mw0KUkVUUllfQ09VTlQ9MA0KDQp3aGlsZSBbICRSRVRSWV9DT1VOVCAtbHQgJE1BWF9SRVRSWV9DT1VOVCBdIDsgZG8NCiAgZWNobyBBV1MtVXBkYXRlTGludXhBbWk6IERvd25sb2FkaW5nIHNjcmlwdCBmcm9tICRTQ1JJUFRfVVJMDQogIGdldF9jb250ZW50cyAiJFNDUklQVF9VUkwiID4gIiRTQ1JJUFRfTkFNRSINCiAgRklMRV9TSVpFPSQoZHUgLWsgL3RtcC8kU0NSSVBUX05BTUUgfCBjdXQgLWYxKQ0KICBlY2hvIEFXUy1VcGRhdGVMaW51eEFtaTogRmluaXNoZWQgZG93bmxvYWRpbmcgc2NyaXB0LCBzaXplOiAkRklMRV9TSVpFDQogIGlmIFsgJEZJTEVfU0laRSAtZ3QgMCBdOyB0aGVuDQogICAgYnJlYWsNCiAgZWxzZQ0KICAgIGlmIFtbICRSRVRSWV9DT1VOVCAtbHQgTUFYX1JFVFJZX0NPVU5UIF1dOyB0aGVuDQogICAgICBSRVRSWV9DT1VOVD0kKChSRVRSWV9DT1VOVCsxKSk7DQogICAgICBlY2hvIEFXUy1VcGRhdGVMaW51eEFtaTogRmlsZVNpemUgaXMgMCwgcmV0cnlDb3VudDogJFJFVFJZX0NPVU5UDQogICAgZmkNCiAgZmkgDQpkb25lDQoNCmlmIFsgJEZJTEVfU0laRSAtZ3QgMCBdOyB0aGVuDQogIGNobW9kICt4ICIkU0NSSVBUX05BTUUiDQogIGVjaG8gQVdTLVVwZGF0ZUxpbnV4QW1pOiBSdW5uaW5nIFVwZGF0ZVNTTUFnZW50IHNjcmlwdCBub3cgLi4uLg0KICAuLyIkU0NSSVBUX05BTUUiIC0tcmVnaW9uICIkUkVHSU9OIg0KZWxzZQ0KICBlY2hvIEFXUy1VcGRhdGVMaW51eEFtaTogVW5hYmxlIHRvIGRvd25sb2FkIHNjcmlwdCwgcXVpdHRpbmcgLi4uLg0KZmkNCg==
+            MinInstanceCount: 1
+            MaxInstanceCount: 1
+            IamInstanceProfileName: "{{ InstanceIamRole }}"
+            TagSpecifications:
+            - ResourceType: instance
+              Tags:
+              - Key: Name
+                Value: SOE-Test-AMI
+        - name: runVulnerabilityScan
+          action: aws:runCommand
+          maxAttempts: 1
+          timeoutSeconds: 600
+          onFailure: Abort
+          inputs:
+            DocumentName: !Ref rCmdDocRunVulnerabilityScan
+            InstanceIds:
+              - "{{ startInstances.InstanceIds }}"
+            Parameters:
+              InstanceTag: "{{ InstanceTag }}"
+              sourceAMIid: "{{ sourceAMIid }}"
+              InspectorAssessmentTemplateArn: "{{ InspectorAssessmentTemplateArn }}"
+              Region: "{{ Region }}"
+            CloudWatchOutputConfig:
+              CloudWatchLogGroupName: !Ref rAutomationTestLinuxAMILogGroup
+              CloudWatchOutputEnabled: true
+        - name: setupInSpecRequirements
+          action: aws:runCommand
+          maxAttempts: 1
+          # Extend timeout to 30m for aws-sdk install
+          timeoutSeconds: 1800
+          onFailure: Abort
+          inputs:
+            DocumentName: !Ref rSetupInSpecRequirements
+            InstanceIds:
+              - "{{ startInstances.InstanceIds }}"
+            CloudWatchOutputConfig:
+              CloudWatchLogGroupName: !Ref rAutomationTestLinuxAMILogGroup
+              CloudWatchOutputEnabled: true
+        - name: runInSpecTests
+          action: aws:runCommand
+          maxAttempts: 1
+          timeoutSeconds: 600
+          onFailure: Abort
+          inputs:
+            DocumentName: AWS-RunInspecChecks
+            InstanceIds:
+              - "{{ startInstances.InstanceIds }}"
+            Parameters:
+              sourceType: S3
+              sourceInfo: "{{ InspecFilePath }}"
+            CloudWatchOutputConfig:
+              CloudWatchLogGroupName: !Ref rAutomationTestLinuxAMILogGroup
+              CloudWatchOutputEnabled: true
+        outputs:
+        - runVulnerabilityScan.Output
+        - runInSpecTests.Output
+        - startInstances.InstanceIds
+
+  # cloudwatch logging
+  rAutomationBuildLinuxAMILogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ami/baking/${pStackPrefix}-build-lg"
+      RetentionInDays: !Ref pLogRetentionDays
+
+  rAutomationTestLinuxAMILogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ami/baking/${pStackPrefix}-test-lg"
+      RetentionInDays: !Ref pLogRetentionDays
+
+  # Creating stack for operations e.g. cloudwatch logging , monitoring etc
+  rLoggingMonitoringOpsStack:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: ami-baking-lnx-amzn-soe-ops-monitoring-cf.yaml
+      Parameters:
+        pStackPrefix: !Ref pStackPrefix
+        pSOEBuildStateMachineArn: !Ref rBuildSOEStateMachine
+        pSOEReleaseStateMachineArn: !Ref rReleaseSOEStateMachine
+        pNotifyCloudwatchFunctionArn: !GetAtt rNotifyCloudwatchFunction.Arn
+        pLatestAMIParameter: !Ref rSSMParamLatestAMI
+        pMemberAccountId: !Ref pMemberAccountId

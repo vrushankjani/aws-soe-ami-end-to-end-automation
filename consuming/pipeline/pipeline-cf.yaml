@@ -1,0 +1,738 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Deployes a CICD pipeline for SOE Consumption reference solution.
+
+######## Parameters ############
+Parameters:
+
+  pPipelinePrefix:
+    Type: String
+    Description: "Solution naming construct prefix for the Pipeline Stack"
+
+  pStackPrefix:
+    Type: String
+    Description: "Solution naming construct prefix for the App Stack"
+
+  pSourceObjectKey:
+    Type: String
+    Description: "CodePipeline Source Bucket Key withing Source Bucket created by rSourceBucket"
+
+  pFetchParameterRemoteRoleArn:
+    Type: String
+    Description: "Reote Role ARN to fetch lateAMI parameter from publishing account"
+
+  pLatestAmiPath:
+    Type: String
+    Description: SSM Param path with latest SOE AMI ID for use with pre-dev
+    Default: "/temp/latestAmi"
+
+########## Stack Resources #########
+Resources:
+
+  rSourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration: 
+        Status: Enabled
+      BucketName: !Sub ${pPipelinePrefix}-source-s3
+      AccessControl: BucketOwnerFullControl
+
+  rArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${pPipelinePrefix}-pipeline-s3
+      AccessControl: BucketOwnerFullControl
+    DeletionPolicy: Delete
+
+  rArtifactStoreBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    DependsOn:
+      - rCodeBuildRole
+      - rCodePipelineRole
+    Properties:
+      Bucket: !Ref rArtifactStoreBucket
+      PolicyDocument:
+        Statement:
+          -
+            Principal:
+              AWS:
+                - !GetAtt [rCodeBuildRole, Arn]
+                - !GetAtt [rCodePipelineRole, Arn]
+            Action: '*'
+            Effect: "Allow"
+            Resource:
+              - !Join [ "", [ "arn:aws:s3:::",!Ref rArtifactStoreBucket ] ]
+              - !Join [ "", [ "arn:aws:s3:::",!Ref rArtifactStoreBucket,"/*" ] ]
+
+  rCodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${pPipelinePrefix}-cicd-cb-iam-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: codebuild.amazonaws.com
+          Action: sts:AssumeRole
+      Path: "/service/"
+      ManagedPolicyArns:
+        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
+
+  rCodeBuildRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${pPipelinePrefix}-cicd-cb-iam-policy
+      Path: "/service/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Action:
+              - logs:DescribeLogGroups
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DeleteLogGroup
+              - s3:ListBucket
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+            Resource: '*'
+          -
+            Effect: "Allow"
+            Action:
+              - s3:*
+            Resource:
+              - !Join [ "", [ "arn:aws:s3:::",!Ref rArtifactStoreBucket ] ]
+              - !Join [ "", [ "arn:aws:s3:::",!Ref rArtifactStoreBucket,"/*" ] ]
+              - !Join [ "", [ "arn:aws:s3:::",!Ref rSourceBucket ] ]
+              - !Join [ "", [ "arn:aws:s3:::",!Ref rSourceBucket,"/*" ] ]
+          -
+            Effect: "Allow"
+            Action:
+              - cloudformation:ValidateTemplate
+            Resource: '*'
+      Roles:
+        -
+          !Ref rCodeBuildRole
+
+  rCodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${pPipelinePrefix}-cicd-cp-iam-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/service/"
+      ManagedPolicyArns:
+        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
+
+  rCodePipelineRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    DependsOn:
+      - rCodePipelineRole
+      - rCloudFormationRole
+    Properties:
+      ManagedPolicyName: !Sub ${pPipelinePrefix}-cicd-cp-iam-policy
+      Path: "/service/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - iam:ListRoles
+              - iam:PassRole
+              - iam:RemoveRoleFromInstanceProfile"
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+            Resource: '*'
+          - 
+            Effect: "Allow"
+            Action:
+              - sts:AssumeRole
+            Resource:
+              - !GetAtt rCloudFormationRole.Arn
+          - 
+            Effect: "Allow"
+            Action:
+              - cloudformation:*
+            Resource:
+              - '*'
+          -
+            Effect: "Allow"
+            Action:
+              - codedeploy:CreateDeployment
+              - codedeploy:GetApplicationRevision
+              - codedeploy:GetDeployment
+              - codedeploy:GetDeploymentConfig
+              - codedeploy:RegisterApplicationRevision
+            Resource: '*'
+          - # Required by code pipeline to start the listed builds
+            Effect: "Allow"
+            Action:
+              - codebuild:StartBuild
+              - codebuild:BatchGetBuilds
+            Resource:
+              - !GetAtt [rCodeBuildApp, Arn]
+              - !GetAtt [rCodeBuildInfra, Arn]
+              - !GetAtt [rCodeBuildUnitTest, Arn]
+              - !GetAtt [rCodeBuildTestFunctional, Arn]
+          -
+            Effect: "Allow"
+            Action:
+              - s3:*
+            Resource:
+              - !Join [ "", [ "arn:aws:s3:::",!Ref rArtifactStoreBucket ] ]
+              - !Join [ "", [ "arn:aws:s3:::",!Ref rArtifactStoreBucket,"/*" ] ]
+              - !Join [ "", [ "arn:aws:s3:::",!Ref rSourceBucket ] ]
+              - !Join [ "", [ "arn:aws:s3:::",!Ref rSourceBucket,"/*" ] ]
+          - # Required by codepipeline to invoke the named lambda resources
+            Effect: "Allow"
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - Fn::Join:
+                - ":"
+                -
+                  - "arn:aws:lambda"
+                  - Ref: "AWS::Region"
+                  - Ref: "AWS::AccountId"
+                  - "function"
+                  - !Ref rGetParamFunction
+      Roles:
+        -
+          !Ref rCodePipelineRole
+
+  rCloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${pPipelinePrefix}-cicd-cf-iam-role
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [cloudformation.amazonaws.com]
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [codepipeline.amazonaws.com]
+        Version: '2012-10-17'
+      Path: "/service/"
+      Policies:
+        - PolicyName: CloudFormationRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - 
+                Effect: Allow
+                Action:
+                    - 'ec2:*'
+                    - 'cloudformation:*'
+                Resource: '*'
+              -
+                Effect: "Allow"
+                Action:
+                  - "iam:AddRoleToInstanceProfile"
+                  - "iam:AttachRolePolicy"
+                  - "iam:CreateInstanceProfile"
+                  - "iam:CreatePolicy"
+                  - "iam:CreateRole"
+                  - "iam:DeleteInstanceProfile"
+                  - "iam:DeletePolicy"
+                  - "iam:DeleteRole"
+                  - "iam:DeleteRolePolicy"
+                  - "iam:DetachRolePolicy"
+                  - "iam:GetInstanceProfile"
+                  - "iam:GetPolicy"
+                  - "iam:GetRole"
+                  - "iam:GetRolePolicy"
+                  - "iam:ListAttachedRolePolicies"
+                  - "iam:ListInstanceProfiles"
+                  - "iam:ListInstanceProfilesForRole"
+                  - "iam:ListRolePolicies"
+                  - "iam:ListRoles"
+                  - "iam:PassRole"
+                  - "iam:PutRolePolicy"
+                  - "iam:RemoveRoleFromInstanceProfile"
+                Resource: '*'
+
+  rCodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    DependsOn:
+      - rCodePipelineRolePolicy
+    Properties:
+      Name: !Sub ${pPipelinePrefix}-cicd-pl
+      RestartExecutionOnUpdate: True
+      RoleArn: !GetAtt [rCodePipelineRole, Arn]
+      ArtifactStore:
+        Location:
+          Ref:
+            rArtifactStoreBucket
+        Type: S3
+      Stages:
+        -
+          Name: Source
+          Actions: 
+            - 
+              Name: SourceAction
+              ActionTypeId: 
+                Category: Source
+                Owner: AWS
+                Version: "1"
+                Provider: S3
+              OutputArtifacts: 
+                - Name: SourceOutput
+              Configuration: 
+                S3Bucket: !Ref rSourceBucket
+                S3ObjectKey: !Ref pSourceObjectKey
+                PollForSourceChanges: false
+              RunOrder: 1
+        -
+          Name: build
+          Actions:
+            -
+              Name: test-unit
+              ActionTypeId:
+                Category: Test
+                Owner: AWS
+                Version: "1"
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                ProjectName: !Ref rCodeBuildUnitTest
+              RunOrder: 1
+            -
+              Name: build-app
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: "1"
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref rCodeBuildApp
+              RunOrder: 2
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildAppOutput
+            -
+              Name: build-infra
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: "1"
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref rCodeBuildInfra
+              RunOrder: 2
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildInfraOutput
+        -
+          Name: test
+          Actions:
+            - # Get the latest ami id to use for this environment
+              Name: get-latest-ami
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Version: "1"
+                Provider: Lambda
+              Configuration:
+                FunctionName: !Ref rGetParamFunction
+                # JSONFileName & keyName for Fn::GetParam
+                UserParameters: !Sub >
+                  {
+                    "Parameter": "${pLatestAmiPath}",
+                    "Type": "ImageId",
+                    "JSONFileName": "latestAmi.json",
+                    "keyName": "ami-id"
+                  }
+              OutputArtifacts:
+                - Name: GetLatestSoeAmiOutput # artifactName for Fn::GetParam
+              RunOrder: 1
+            -
+              Name: pre-deploy-create-changeset
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: "1"
+                Provider: CloudFormation
+              Configuration:
+                RoleArn: !GetAtt rCloudFormationRole.Arn
+                ChangeSetName: !Sub ${pStackPrefix}-cs
+                ActionMode: CHANGE_SET_REPLACE
+                StackName: !Sub ${pStackPrefix}-cf
+                Capabilities: CAPABILITY_NAMED_IAM
+                TemplatePath: BuildInfraOutput::stack/infra/application-cf.yaml
+                ParameterOverrides: !Sub >
+                  {
+                    "pSolutionNaming": "${pStackPrefix}",
+                    "pLatestAmi" : { "Fn::GetParam" : ["GetLatestSoeAmiOutput", "latestAmi.json", "ami-id"]}
+                  }
+              InputArtifacts:
+                - Name: BuildInfraOutput
+                - Name: GetLatestSoeAmiOutput
+              RunOrder: 2
+            -
+              Name: deploy-changeset
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: "1"
+                Provider: CloudFormation
+              Configuration:
+                RoleArn: !GetAtt rCloudFormationRole.Arn
+                ChangeSetName: !Sub ${pStackPrefix}-cs
+                ActionMode: CHANGE_SET_EXECUTE
+                StackName: !Sub ${pStackPrefix}-cf
+              InputArtifacts:
+                - Name: BuildInfraOutput
+              RunOrder: 3
+            -
+              Name: test-functional
+              ActionTypeId:
+                Category: Test
+                Owner: AWS
+                Version: "1"
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref rCodeBuildTestFunctional
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: DevFunctionalTestOutput
+              RunOrder: 4
+
+  rAmazonCloudWatchEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        -
+          PolicyName: cwe-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Join [ '', [ 'arn:aws:codepipeline:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':', !Ref rCodePipeline ] ]
+
+  rAmazonCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - 'AWS API Call via CloudTrail'
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          eventName:
+            - PutObject
+            - CompleteMultipartUpload
+          resources:
+            ARN:
+              - !Join [ '', [ !GetAtt rSourceBucket.Arn, '/', !Ref pSourceObjectKey ] ]
+      Targets:
+        -
+          Arn:
+            !Join [ '', [ 'arn:aws:codepipeline:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':', !Ref rCodePipeline ] ]
+          RoleArn: !GetAtt rAmazonCloudWatchEventRole.Arn
+          Id: codepipeline-test
+
+  rCodeBuildUnitTest:
+    Type: AWS::CodeBuild::Project
+    DependsOn:
+      - rCodeBuildRole
+      - rArtifactStoreBucket
+    Properties:
+      Name: !Sub ${pPipelinePrefix}-unit-test-cb
+      Description: 'Run Python unit tests'
+      ServiceRole: !GetAtt [rCodeBuildRole, Arn]
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/python:3.7.1
+        EnvironmentVariables:
+          - Name: S3Bucket
+            Value: !Ref rArtifactStoreBucket
+          - Name: SolutionNaming
+            Value: !Sub ${pPipelinePrefix}
+          - Name: Region
+            Value: !Ref "AWS::Region"
+          - Name: OrganisationAccountID
+            Value: !Sub ${pPipelinePrefix}-test-accountId
+          - Name: OrganisationAccountRole
+            Value: !Sub ${pPipelinePrefix}-test-accountRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - echo 'TODO eg. install'
+            pre_build:
+              commands:
+                - echo 'TODO eg. static code analysis'
+            build:
+              commands:
+                - echo 'TODO eg. unit test + coverage'
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub ${pPipelinePrefix}-unit-test-cb
+
+  rCodeBuildApp:
+    Type: AWS::CodeBuild::Project
+    DependsOn:
+      - rCodeBuildRole
+      - rArtifactStoreBucket
+    Properties:
+      Name: !Sub ${pPipelinePrefix}-build-app-cb
+      Description: 'Build Reference App'
+      ServiceRole: !GetAtt [rCodeBuildRole, Arn]
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/python:3.7.1
+        EnvironmentVariables:
+          - Name: S3Bucket
+            Value: !Ref rArtifactStoreBucket
+          - Name: SolutionNaming
+            Value: !Sub ${pPipelinePrefix}
+          - Name: Region
+            Value: !Ref "AWS::Region"
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - echo 'TODO eg. install build tools'
+            pre_build:
+              commands:
+                - echo 'TODO eg. pre build configuration'
+            build:
+              commands:
+                - echo 'TODO eg. build app'
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub ${pPipelinePrefix}-build-app-cb
+
+  rCodeBuildTestFunctional:
+    Type: AWS::CodeBuild::Project
+    DependsOn:
+      - rCodeBuildRole
+      - rArtifactStoreBucket
+    Properties:
+      Name: !Sub ${pPipelinePrefix}-test-functional-cb
+      Description: 'Run Functional Test against the Reference App'
+      ServiceRole: !GetAtt [rCodeBuildRole, Arn]
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/python:3.7.1
+        EnvironmentVariables:
+          - Name: S3Bucket
+            Value: !Ref rArtifactStoreBucket
+          - Name: SolutionNaming
+            Value: !Sub ${pPipelinePrefix}
+          - Name: Region
+            Value: !Ref "AWS::Region"
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - echo 'TODO eg. install test tools'
+            pre_build:
+              commands:
+                - echo 'TODO eg. pre test configuration'
+            build:
+              commands:
+                - echo 'TODO eg. run functional tests'
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub ${pPipelinePrefix}-test-functional-cb
+
+  rCodeBuildInfra:
+    Type: AWS::CodeBuild::Project
+    DependsOn:
+      - rCodeBuildRole
+      - rArtifactStoreBucket
+    Properties:
+      Name: !Sub ${pPipelinePrefix}-cicd-package-cb
+      Description: 'Package artifact for CICD Pipeline'
+      ServiceRole: !GetAtt [rCodeBuildRole, Arn]
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/python:3.7.1
+        EnvironmentVariables:
+          - Name: S3Bucket
+            Value: !Ref rArtifactStoreBucket
+          - Name: StackSolutionNamingPrefix
+            Value: !Sub ${pStackPrefix}
+          - Name: Region
+            Value: !Ref "AWS::Region"
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - printenv
+                - ls -R
+            build:
+              commands:
+                - aws cloudformation validate-template --template-body file://stack/infra/application-cf.yaml --region $Region
+          artifacts:
+            type: zip
+            files:
+              - stack/infra/application-cf.yaml
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub ${pPipelinePrefix}-cicd-package-cb
+
+  rLambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: '/service/'
+      RoleName: !Sub ${pPipelinePrefix}-lambda-iam-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonSSMAutomationRole
+        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
+
+  rLambdaFunctionRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${pPipelinePrefix}-lambda-iam-policy
+      Path: "/service/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - # Required by invoked lambdas from codepipeline to ack/nack back
+            Effect: Allow
+            Action:
+              - codepipeline:PutJobSuccessResult
+              - codepipeline:PutJobFailureResult
+            Resource: "*"
+          - # Required for lambda to write logs
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:*
+            Resource:
+              - Fn::Join:
+                - ':'
+                -
+                  - 'arn:aws:logs'
+                  - Ref: 'AWS::Region'
+                  - Ref: 'AWS::AccountId'
+                  - log-group:/aws/lambda/*:*:*
+          -
+            Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource:
+              - !Ref pFetchParameterRemoteRoleArn
+          - # Required for lambda to validate image id
+            Effect: Allow
+            Action:
+              - ec2:DescribeImages
+            Resource: "*"
+          - # Required for start pipeline lambda to trigger cicd pipeline
+            Effect: "Allow"
+            Action:
+              - codepipeline:StartPipelineExecution
+            Resource: "*"
+          - # Required to retrieve the SSM param values
+            Effect: "Allow"
+            Action:
+              - ssm:*
+            Resource:
+              - Fn::Join:
+                - ":"
+                -
+                  - "arn:aws:ssm"
+                  - Ref: 'AWS::Region'
+                  - Ref: "AWS::AccountId"
+                  - !Sub "*/${pPipelinePrefix}-*"
+      Roles:
+        -
+          Ref: "rLambdaFunctionRole"
+
+  rGetParamFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: get_ssm_param.lambda_handler
+      Runtime: python3.7
+      Timeout: 300
+      CodeUri: serverless/ssm_param
+      Environment:
+        Variables:
+          Region: !Ref "AWS::Region"
+          FetchParameterRemoteRoleArn: !Ref pFetchParameterRemoteRoleArn
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      FunctionName: !Sub ${pPipelinePrefix}-get-param-lambda
+      Tags:
+        name: !Sub ${pPipelinePrefix}-get-param-lambda
+
+Outputs:
+  CodePipelineURL:
+    Description: CodePipeline URL
+    Value:
+      Fn::Join:
+        - ""
+        - - "https://console.aws.amazon.com/codepipeline/home?region="
+          - Ref: AWS::Region
+          - "#/view/"
+          - Ref: rCodePipeline

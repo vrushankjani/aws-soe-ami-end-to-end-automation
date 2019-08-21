@@ -1,0 +1,5 @@
+boto3
+pylint
+pytest
+moto
+pytest-cov
