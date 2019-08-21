@@ -53,6 +53,9 @@ The solution also deploys cloudwatch services additionally as below
 
 &nbsp;
 
+## Hight Level Architecture Diagram
+![High Level Architecture](architecture/soe_ami_baking_high_level_architect.png)
+
 ##  Folder Structure within publishing folder
 &nbsp;
 
