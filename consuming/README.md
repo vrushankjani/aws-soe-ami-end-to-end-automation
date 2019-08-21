@@ -5,7 +5,7 @@
 ## Overview 
 &nbsp;
 
-## Publishing
+## Consuming
 *consuming* folder contains reference solution to consume the new AMI produce by SOE baking solution under 'publishing' folder and use that to deploy EC2 
 
 
@@ -63,12 +63,12 @@ Follow steps as below
 
 #### Set environment variables
 ```
-Set credentials/profile for the AWS account you want to deploy this solution
+Set credentials/profile for the AWS account you want to deploy this solution before running any make commands
 ```
 &nbsp;
 #### Set cloudformation parameter inputs 
 **IMPORTANT**
-You can override all the parameters, however below are the parameters in the **consuming/Makefile** that you would need to provide your own custom values for. Rest of the parameter values you can keep it untouched.
+Below are the parameters in the **consuming/Makefile** that you need to provide your own custom values for. Rest of the parameter values you can kept as is.
 
 These parameters are marked with << Input your value here >> message.
 ```
@@ -77,16 +77,16 @@ Provide the publishing account ID which build and publish AMI that we need to ac
 ```
 &nbsp;
 #### Deploy/Update Solution
-From the publishing folder, run:
+From the consuming folder, run:
 ```
-cd consuming
+cd consuming (ensure you are in consuming folder)
 make deploy-stack
 ```
 
 #### Destroy Solution
-From the publishing folder, run:
+From the consuming folder, run:
 ```
-cd consuming
+cd consuming (ensure you are in consuming folder)
 make destroy-stack
 ```
 

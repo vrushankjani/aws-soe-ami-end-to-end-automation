@@ -1,4 +1,4 @@
-# End-to-End Reference solution for SOE(Standard Operating Environment) Linux AMI Baking as well as consuming
+# End-to-End Reference solution for SOE(Standard Operating Environment) Linux AMI Baking + Cross account consuming
 
 &nbsp;
 ## Overview 
@@ -9,8 +9,8 @@ There are two reference solutions here,
 
 Please follow the below two README files to understand each reference solution in details
 
-[Publishing README](publishing/README.md)
-[Consuming README](consuming/README.md)
+- [Publishing README](publishing/README.md)
+- [Consuming README](consuming/README.md)
 
 &nbsp;
 ## Developer:

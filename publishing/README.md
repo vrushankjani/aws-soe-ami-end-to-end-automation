@@ -14,7 +14,7 @@ The AMIs are:
 	- QA / Compliance Tested
 	- Scanned for high security vulnerabilities
 
-These AMIs are created on a schedule basis and are made available to a member AWS account which can then consume this AMI its sample EC2 application stack. This can further be expanded to share this AMI with multiple accounts or across organisation.	
+These AMIs are created on a schedule basis and are made available to a member AWS account which can then consume this AMI for its sample EC2 application stack. This can further be expanded to share this AMI with multiple accounts or across organisation.	
 
 This repository contains code to deploy a solution code to deploy SOE baking solution.
 
@@ -28,7 +28,7 @@ AMIs include the following agents and software packages:
         	
 
 &nbsp;
-As a part of this solution it deploys two step functions
+As a part of this solution it mainly deploys two step functions
 + SOE Build Step Functions
     - First it performs build automation document which is a System Manager automation type document. Using this document it orchestrate following configurations
         -  It updates the OS, installs common agents as listed above as well as  AWS Corretto (JRE). 
@@ -39,11 +39,11 @@ As a part of this solution it deploys two step functions
     - Finally it copies this new AMI into $(context)/nextAMI" parameter store
 
 + SOE Release Step Functions
-This step function, uses the AMI build by the build step function above and then releases it. 
-    - It fetches this AMI from the parameter store "$(context)/nextAMI".
-    - It shares this AMI with the member account for cross account access
-    - It publishes this AMI Id into a new parameter store "$(context)/latestAMI" to make it available for the consumption
-    - It also sets up a role to access "$(context)/latestAMI" via cross account asuume role from member accounbt. The member account then uses this parameter store value to fetch new AMI ID.
+    - This step function, uses the AMI build by the build step function above and then releases/publishes it. 
+        - It fetches this AMI from the parameter store "$(context)/nextAMI".
+        - It shares this AMI with the member account for cross account access
+        - It publishes this AMI Id into a new parameter store "$(context)/latestAMI" to make it available for the consumption
+        - It also sets up a role to access "$(context)/latestAMI" via cross account asuume role from member accounbt. The member account then uses this parameter store value to fetch new AMI ID.
 
 The solution also deploys cloudwatch services additionally as below
 
@@ -55,6 +55,7 @@ The solution also deploys cloudwatch services additionally as below
 
 ##  Folder Structure within publishing folder
 &nbsp;
+
 `stack/app/src` - Solution code source
 
 `stack/app/test` - Solution unit test files
@@ -71,7 +72,10 @@ This solution is tested in multi account setup. So it is recommended to use two 
 - Another account which you nominate as member account, where we can set up cross account access as well as send some events on event bus
 
 ### Event bus in member account
-Ensure that the default event bus in the member account of your choice is setup with allowing access from this account where you deploy the baking solution.
+Ensure that the default event bus in the member account of your choice is setup with allowing access from this account where you deploy the baking solution. Basically you would require to allow publishing account to publish event to the event busy in member account.
+
+Follow this [link] (https://docs.aws.amazon.com/AmazonCloudWatch/latest/events/CloudWatchEvents-CrossAccountEventDelivery.html) to understand how to setup event bus. 
+
 
 ### Source AMI
 Note: We are using **CIS hardened AMI** built upon Amazon Linux2 and Level 1 CIS benchmark configuration as a source AMI. The solution may not work with any other AMI which is not hardened as it will result in inspect test failing in its assessments.
@@ -98,13 +102,13 @@ Follow steps as below
 
 #### Set environment variables
 ```
-Set credentials/profile for the AWS account you want to deploy this solution
+Set credentials/profile for the AWS account you want to deploy this solution before running any make commands
 ```
 &nbsp;
 #### Set cloudformation parameter inputs 
 **IMPORTANT**
-You can override all the parameters, however below are the parameters in the **publisbhing/Makefile** that you would like to provide your own custom values for. Rest of the parameter values you can keep it untouched.
-These parameters are marked with << Input your value here >> message.
+Below are the parameters in the **publisbhing/Makefile** that you need to provide  with your own custom values for. Rest of the parameter values you can keep it untouched.
+
 ```
 - MemberAccountId:<< Input your value here >>
 Provide the member account ID you want to share the AMI with. This will the account then you can run consumption of the AMI.
@@ -118,13 +122,14 @@ If you want to setup Slack Integration, please provide values for the below
 #### Deploy/Update Solution
 From the publishing folder, run:
 ```
-cd publishing
+cd publishing (ensure you are in publishing folder)
 make deploy-stack
 ```
 &nbsp;
 ###  Running syntax tests
 To run a syntax test on CFN templates for the CICD pipeline and solution:
 ```
+cd publishing (ensure you are in publishing folder)
 make test-cfn
 ```
 
