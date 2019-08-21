@@ -76,8 +76,6 @@ Resources:
             Service: codebuild.amazonaws.com
           Action: sts:AssumeRole
       Path: "/service/"
-      ManagedPolicyArns:
-        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
 
   rCodeBuildRolePolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -130,8 +128,6 @@ Resources:
               Service: codepipeline.amazonaws.com
             Action: sts:AssumeRole
       Path: "/service/"
-      ManagedPolicyArns:
-        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
 
   rCodePipelineRolePolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -647,7 +643,6 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonSSMAutomationRole
-        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
 
   rLambdaFunctionRolePolicy:
     Type: AWS::IAM::ManagedPolicy

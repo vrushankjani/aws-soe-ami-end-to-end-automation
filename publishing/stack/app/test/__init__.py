@@ -6,7 +6,7 @@ import os
 CONST_REGION = 'ap-southeast-2'
 CONST_ENVIRONMENT = 'unit'
 CONST_NEXT_AMI_PARAM = 'unit-test/nextAmi'
-CONST_SOL_NAMING = 'plt-baking-unit'
+CONST_SOL_NAMING = 'ami-baking-unit'
 CONST_SOE_TYPE = 'lnx'
 
 os.environ['Region'] = CONST_REGION

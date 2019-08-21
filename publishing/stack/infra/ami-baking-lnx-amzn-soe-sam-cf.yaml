@@ -116,8 +116,6 @@ Resources:
               Service:
                 - events.amazonaws.com
       Path: "/service/"
-      ManagedPolicyArns:
-        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
 
   rCloudWatchRolePolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -182,8 +180,6 @@ Resources:
                 - !Sub states.${AWS::Region}.amazonaws.com
             Action: "sts:AssumeRole"
       Path: "/service/"
-      ManagedPolicyArns:
-        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
 
   rStepFunctionExecutionRolePolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -430,7 +426,6 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonSSMAutomationRole
-        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
 
   rLambdaFunctionRolePolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -835,7 +830,6 @@ Resources:
                 - ec2.amazonaws.com
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
-        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/platform/globaldeny-iam-policy'
       Policies:
         -
           PolicyName: "S3Access"

@@ -43,7 +43,7 @@ def lambda_handler(event, context):
         # Step 3 - Update instanceId SSM parameter
         instance_id = event['BuildInstanceID']
         if instance_id:
-            instance_id_ssm_param = '/plt-baking/lnx-amzn/instanceId'
+            instance_id_ssm_param = '/ami-baking-lnx-amzn-soe/lnx-amzn/instanceId'
             update_ssm_output2 = update_ssm_param(region, instance_id_ssm_param, instance_id)
             print("SSM Parameter store '" + instance_id_ssm_param + "' updated with AMI '" + instance_id + "' version '" + update_ssm_output2 + "'")
         else:

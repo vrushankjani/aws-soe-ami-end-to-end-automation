@@ -81,7 +81,7 @@ def test_lambda_handler_with_invalid_instance_id():
 
 @mock_ssm
 def test_lambda_handler_with_valid_instance_id():
-    param = '/plt-baking/lnx-amzn/instanceId'
+    param = '/ami-baking-lnx-amzn-soe/lnx-amzn/instanceId'
 
     # Setup test data
     original_param_value = 'blank' # same as initial cfn deployment value

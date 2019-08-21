@@ -32,12 +32,12 @@ def lambda_handler(event, context):
         # Step 1 - Get the next AMI id to publish
         next_ami_id = get_ssm_param(region, next_ami_ssm_param)
         # TODO: Verify the AMI_D is a valid format
-        instance_id_ssm_param = '/plt-baking/lnx-amzn/instanceId'
+        instance_id_ssm_param = '/ami-baking-lnx-amzn-soe/lnx-amzn/instanceId'
         instance_id = get_ssm_param(region, instance_id_ssm_param)
 
         # Step 2 - Share the AMI with target account_ids
         account_ids = os.environ['AccountIDs'].split(',')
-        
+
         share_ami_output = share_ami(region, next_ami_id, account_ids)
         print("Permission update ouput: '" + share_ami_output + "'")
 
