@@ -4,7 +4,7 @@ _REGION=ap-southeast-2
 ############################# Input your own values #######################
 
 # Provid your own solution prefix to avoid any bucket name clash
-SolutionNamingPrefix= # e.g. ami-baking-lnx-amzn
+SolutionNamingPrefix=soetestvj# e.g. ami-baking-lnx-amzn
 
 # Provide Slack configurations if you need to integrate with slack channel for notifications
 # If you don't need slack integration, keep UseSlackIntegration=false, otherwise set this to true
@@ -14,7 +14,8 @@ SlackIcon=
 UseSlackIntegration=false #set this to true if you need slack integration and provide values for above parameters
 
 #IMP: Member account id to share this AMI with. 
-# Currently only supporting one member account.
+# Currently only supporting one member account. 
+# This is a required input. Please put your own account.
 MemberAccountId=
 
 
@@ -88,15 +89,15 @@ STACK_PARAMETERS = \
 # OVERRIDE CICD TARGETS - Override after the CICD import (if any)
 #
 test-cfn:
-	#-aws s3 mb s3://$(STACK_SRC_BUCKET) --region $(_REGION)
+	-aws s3 mb s3://$(STACK_SRC_BUCKET) --region $(_REGION)
 	# Validate Application Infra Template (Upload to s3 and use --template-url to avoid 51k file size limit)
-	#aws s3 cp $(STACK_INFRA_DIR)/$(STACK_TEMPLATE_NAME) s3://$(STACK_SRC_BUCKET)/$(STACK_TEMPLATE_NAME)
+	aws s3 cp $(STACK_INFRA_DIR)/$(STACK_TEMPLATE_NAME) s3://$(STACK_SRC_BUCKET)/$(STACK_TEMPLATE_NAME)
 	aws cloudformation validate-template \
-		--template-body file://$(STACK_INFRA_DIR)/$(STACK_TEMPLATE_NAME) \
+		--template-url https://s3-$(_REGION).amazonaws.com/$(STACK_SRC_BUCKET)/$(STACK_TEMPLATE_NAME) \
 		--region $(_REGION)
-	#aws s3 cp $(STACK_INFRA_DIR)/$(STACK_OPS_TEMPLATE_NAME) s3://$(STACK_SRC_BUCKET)/$(STACK_OPS_TEMPLATE_NAME)
+	aws s3 cp $(STACK_INFRA_DIR)/$(STACK_OPS_TEMPLATE_NAME) s3://$(STACK_SRC_BUCKET)/$(STACK_OPS_TEMPLATE_NAME)
 	aws cloudformation validate-template \
-		--template-body file://$(STACK_INFRA_DIR)/$(STACK_OPS_TEMPLATE_NAME) \
+		--template-url https://s3-$(_REGION).amazonaws.com/$(STACK_SRC_BUCKET)/$(STACK_OPS_TEMPLATE_NAME) \
 		--region $(_REGION)
 	@echo ""
 
