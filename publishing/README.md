@@ -68,9 +68,6 @@ The solution also deploys cloudwatch services additionally as below
 ## Prerequisites
 &nbsp;
 
-### Marketplace subscription 
-Subscribe to CIS marketplace here - https://aws.amazon.com/marketplace/pp/B07M68CJS5/
-
 ### Multiaccount (M)
 This solution is tested in multi account setup. So it is recommended to use two accounts.
 - One account where you deploy this solution
@@ -83,7 +80,13 @@ Follow this [link] (https://docs.aws.amazon.com/AmazonCloudWatch/latest/events/C
 
 
 ### Source AMI
-Note: We are using **CIS hardened AMI** built upon Amazon Linux2 and Level 1 CIS benchmark configuration as a source AMI. The solution may not work with any other AMI which is not hardened as it will result in inspect test failing in its assessments.
+We are using **CIS hardened AMI** built upon Amazon Linux2 and Level 1 CIS benchmark configuration as a source AMI. 
+
+Subscribe to CIS marketplace here - https://aws.amazon.com/marketplace/pp/B07M68CJS5/ unless your are using your own AMI using **OVERRIDE_AMI** parameter. 
+
+**Note** that this solution is only tested with CIS hardened image. If you are using any
+other image, you will need to add your own CIS benchmark hardening, unless it will fail the inspector assessment test. 
+
 
 ### Permission
 &nbsp;

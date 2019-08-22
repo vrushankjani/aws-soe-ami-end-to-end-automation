@@ -21,9 +21,11 @@ MemberAccountId=
 
 
 # Parameters to fetch the latest base AMI from CIS market place
-# Note: I use CIS Marketplace Image for this solution. 
-# It has a nominal hourly charge. Please check the pricing in marketplace before you 
-# test this solution.
+# Note: 
+# 1. This solution is tested with CIS Marketplace Image (hardened image). It has a nominal hourly charge. 
+# Please check the pricing in marketplace before you test this solution.
+# 2. You can use your own AMI by providing AMI ID in override_ami, however you will need to harden it by 
+# using your own script, so that it doesn't fail on inspector assessment test
 
 OS?=lnx
 OS_TYPE?=amzn
