@@ -1,7 +1,28 @@
 
 _REGION=ap-southeast-2
 
-# Default to Amazon Linux 2 (Override from command line)
+############################# Input your own values #######################
+
+# Provid your own solution prefix to avoid any bucket name clash
+SolutionNamingPrefix= # e.g. ami-baking-lnx-amzn
+
+# We are developing the CICD pipeline in Sandbox
+SlackChannel=  #(e.g. \\\#test-channel)
+SlackURL= 
+SlackIcon= 
+UseSlackIntegration=false
+
+#IMP: Member account id to share this AMI with. 
+# Currently only supporting one member account.
+MemberAccountId=
+
+
+
+# Parameters to fetch the latest base AMI from CIS market place
+# Note: I use CIS Marketplace Image for this solution. 
+# It has a nominal hourly charge. Please check the pricing in marketplace before you 
+# test this solution.
+
 OS?=lnx
 OS_TYPE?=amzn
 AMI_PATTERN?=CIS Amazon Linux 2 Benchmark *
@@ -10,22 +31,21 @@ VULNERABILITY_EXCEPTIONS_LIST?=
 OVERRIDE_AMI?=
 
 
-# Solution Settings
-SolutionNamingPrefix=ami-baking-$(OS)-$(OS_TYPE)-soe
 
-# File settings
-STACK_TEMPLATE_NAME=$(SolutionNamingPrefix)-sam-cf.yaml
-STACK_OPS_TEMPLATE_NAME=$(SolutionNamingPrefix)-ops-monitoring-cf.yaml
-StackEnvironment?=sbx
-# Stack Name
-STACK_NAME=$(SolutionNamingPrefix)-stack-cf
-
-# Directory settings
+# Files and Directory settings
+STACK_TEMPLATE_NAME=ami-baking-lnx-amzn-soe-sam-cf.yaml
+STACK_OPS_TEMPLATE_NAME=ami-baking-lnx-amzn-soe-ops-monitoring-cf.yaml
 STACK_INFRA_DIR=stack/infra
 StackAppDir=stack/app
 STACK_SRC_DIR=$(StackAppDir)/src
 StackTestDir=$(StackAppDir)/test
 STACK_UNIT_TEST_DIR=$(StackTestDir)/unit
+
+# Stack Name
+STACK_NAME=$(SolutionNamingPrefix)-stack-cf
+StackEnvironment?=sbx
+
+
 # Setup PYTHONPATH so tests can find the required modules
 export PYTHONPATH := ./$(STACK_SRC_DIR)/:./$(STACK_UNIT_TEST_DIR)/:$(PYTHONPATH)
 
@@ -36,11 +56,7 @@ STACK_INSPEC_TEST_BUCKET=$(SolutionNamingPrefix)-inspec-tests-s3
 STACK_SRC_BUCKET=$(SolutionNamingPrefix)-stack-src-s3
 
 
-# We are developing the CICD pipeline in Sandbox
-SlackChannel= #<< Input your value here >> (e.g. \\\#test-channel)
-SlackURL= #<< Input your value here >>
-SlackIcon= #<< Input your value here >>
-UseSlackIntegration=false
+
 
 # Cloudwatch event schedules
 BuildSchedule=cron(0 18 ? * WED *)
@@ -48,9 +64,6 @@ ReleaseSchedule=cron(0 18 ? * SUN *)
 
 VulnerabilityScanDuration=600
 LogRetentionDays=7
-
-#IMP: Member account id to share this AMI with. Currently only supporting one member account.
-MemberAccountId=XXXXXXXXX #<< Input your nominated member account id here >>
 
 
 STACK_PARAMETERS = \
@@ -91,15 +104,15 @@ test-inspec:
 # OVERRIDE CICD TARGETS - Override after the CICD import (if any)
 #
 test-cfn:
-	-aws s3 mb s3://$(STACK_SRC_BUCKET) --region $(_REGION)
+	#-aws s3 mb s3://$(STACK_SRC_BUCKET) --region $(_REGION)
 	# Validate Application Infra Template (Upload to s3 and use --template-url to avoid 51k file size limit)
-	aws s3 cp $(STACK_INFRA_DIR)/$(STACK_TEMPLATE_NAME) s3://$(STACK_SRC_BUCKET)/$(STACK_TEMPLATE_NAME)
+	#aws s3 cp $(STACK_INFRA_DIR)/$(STACK_TEMPLATE_NAME) s3://$(STACK_SRC_BUCKET)/$(STACK_TEMPLATE_NAME)
 	aws cloudformation validate-template \
-		--template-url https://s3-$(_REGION).amazonaws.com/$(STACK_SRC_BUCKET)/$(STACK_TEMPLATE_NAME) \
+		--template-body file://$(STACK_INFRA_DIR)/$(STACK_TEMPLATE_NAME) \
 		--region $(_REGION)
-	aws s3 cp $(STACK_INFRA_DIR)/$(STACK_OPS_TEMPLATE_NAME) s3://$(STACK_SRC_BUCKET)/$(STACK_OPS_TEMPLATE_NAME)
+	#aws s3 cp $(STACK_INFRA_DIR)/$(STACK_OPS_TEMPLATE_NAME) s3://$(STACK_SRC_BUCKET)/$(STACK_OPS_TEMPLATE_NAME)
 	aws cloudformation validate-template \
-		--template-url https://s3-$(_REGION).amazonaws.com/$(STACK_SRC_BUCKET)/$(STACK_OPS_TEMPLATE_NAME) \
+		--template-body file://$(STACK_INFRA_DIR)/$(STACK_OPS_TEMPLATE_NAME) \
 		--region $(_REGION)
 	@echo ""
 
