@@ -68,8 +68,10 @@ The solution also deploys cloudwatch services additionally as below
 ## Prerequisites
 &nbsp;
 
+### Marketplace subscription 
+Subscribe to CIS marketplace here - https://aws.amazon.com/marketplace/pp/B07M68CJS5/
 
-### Multiaccount
+### Multiaccount (M)
 This solution is tested in multi account setup. So it is recommended to use two accounts.
 - One account where you deploy this solution
 - Another account which you nominate as member account, where we can set up cross account access as well as send some events on event bus
