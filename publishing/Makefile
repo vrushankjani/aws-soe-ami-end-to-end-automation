@@ -4,7 +4,7 @@ _REGION=ap-southeast-2
 ############################# Input your own values #######################
 
 # Provid your own solution prefix to avoid any bucket name clash
-SolutionNamingPrefix=soetestvj# e.g. ami-baking-lnx-amzn
+SolutionNamingPrefix=soetest# e.g. ami-baking-lnx-amzn
 
 # Provide Slack configurations if you need to integrate with slack channel for notifications
 # If you don't need slack integration, keep UseSlackIntegration=false, otherwise set this to true
