@@ -1,9 +1,9 @@
 
 _REGION=ap-southeast-2
 
-############################# Input your own values #######################
+############################# Provide your custom values #######################
 
-# Provid your own solution prefix to avoid any bucket name clash
+# Replace with your own solution prefix to avoid any bucket name clash
 SolutionNamingPrefix=soetest# e.g. ami-baking-lnx-amzn
 
 # Provide Slack configurations if you need to integrate with slack channel for notifications
@@ -13,11 +13,11 @@ SlackURL=
 SlackIcon= 
 UseSlackIntegration=false #set this to true if you need slack integration and provide values for above parameters
 
-#IMP: Member account id to share this AMI with. 
-# Currently only supporting one member account. 
-# This is a required input. Please put your own account.
+# IMP: This is a mandatory input. 
+# Provide a another account id (member account) to share this AMI with.
 MemberAccountId=
 
+############################# Provide your custom values  #######################
 
 
 # Parameters to fetch the latest base AMI from CIS market place

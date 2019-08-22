@@ -1,16 +1,24 @@
-.DEFAULT_GOAL := deploy
 
 _REGION=ap-southeast-2
 
-# Change these to your respective environment settings
+############################# Input your own values #######################
+SolutionNamingPrefix=soe-consumption-test#e.g. soe-consumption
 
-# Solution and Repository
-SolutionNamingPrefix=soe-consumption
-PipelineSolutionNaming=$(SolutionNamingPrefix)
+# IMP: This is a mandatory input. 
+# Provide the account id of publshing account where you have deployed solution from 'publishing' folder
+PublishingAccountId=#<<Input your publishig account here which deploys SOE baking solution>>
 
-# Change these to match your cloudformation template names (if different)
+############################# Input your own values #######################
+
+
+
+# Template files 
 PipelineTemplateName=pipeline-cf.yaml
 AppInfraTemplateName=application-cf.yaml
+
+
+# Resource naming
+PipelineSolutionNaming=$(SolutionNamingPrefix)
 
 # Change this to match the name in your template if different
 # PipelineArtifactBucketName and PipelineSourceBucketName are defined in pipeline template
@@ -22,10 +30,10 @@ PipelineSourceBucketName=$(PipelineSolutionNaming)-source-s3
 ArtifactBucketName=$(PipelineSolutionNaming)-artifact
 PipelineStackName=$(PipelineSolutionNaming)-pipeline-cf
 
-#IMP: Provide your publishing account Id below
-PublishingAccountId=XXXXXXXXX #<<Input your publishig account here which deploys SOE baking solution>>
-FetchParameterRemoteRoleArn=arn:aws:iam::$(PublishingAccountId):role/service/ami-baking-lnx-amzn-soe-lnx-amzn-soe-service-iam-role
 
+# Publishing account
+# Role in publishing account to assume for fetching AMI Id
+FetchParameterRemoteRoleArn=arn:aws:iam::$(PublishingAccountId):role/service/ami-baking-lnx-amzn-soe-lnx-amzn-soe-service-iam-role
 LatestAmiPath=/ami-baking-lnx-amzn-soe/lnx-amzn/latestAmi
 
 .PHONY: test-cfn
