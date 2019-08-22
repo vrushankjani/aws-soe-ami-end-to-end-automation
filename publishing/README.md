@@ -113,6 +113,7 @@ Set credentials/profile for the AWS account you want to deploy this solution bef
 Below are the parameters in the **publisbhing/Makefile** that you need to provide  with your own custom values for. Rest of the parameter values you can keep it untouched.
 
 ```
+- SolutionNamingPrefix: << Add/Update you own prefix to avoid bucket name clashes"
 - MemberAccountId:<< Input your value here >>
 Provide the member account ID you want to share the AMI with. This will the account then you can run consumption of the AMI.
 If you want to setup Slack Integration, please provide values for the below
