@@ -6,11 +6,12 @@ _REGION=ap-southeast-2
 # Provid your own solution prefix to avoid any bucket name clash
 SolutionNamingPrefix= # e.g. ami-baking-lnx-amzn
 
-# We are developing the CICD pipeline in Sandbox
+# Provide Slack configurations if you need to integrate with slack channel for notifications
+# If you don't need slack integration, keep UseSlackIntegration=false, otherwise set this to true
 SlackChannel=  #(e.g. \\\#test-channel)
 SlackURL= 
 SlackIcon= 
-UseSlackIntegration=false
+UseSlackIntegration=false #set this to true if you need slack integration and provide values for above parameters
 
 #IMP: Member account id to share this AMI with. 
 # Currently only supporting one member account.
@@ -49,23 +50,20 @@ StackEnvironment?=sbx
 # Setup PYTHONPATH so tests can find the required modules
 export PYTHONPATH := ./$(STACK_SRC_DIR)/:./$(STACK_UNIT_TEST_DIR)/:$(PYTHONPATH)
 
-
+# S3 bucket names
 # S3 bucket to host inspec test files used during testing step of AMI build step functions
 STACK_INSPEC_TEST_BUCKET=$(SolutionNamingPrefix)-inspec-tests-s3
 # Make Bucket Settings: Used by this Makefile to store the artifacts to create the pipeline/stack
 STACK_SRC_BUCKET=$(SolutionNamingPrefix)-stack-src-s3
 
 
-
-
 # Cloudwatch event schedules
 BuildSchedule=cron(0 18 ? * WED *)
 ReleaseSchedule=cron(0 18 ? * SUN *)
-
 VulnerabilityScanDuration=600
 LogRetentionDays=7
 
-
+# Stack Parameters
 STACK_PARAMETERS = \
 	pEnvironment=$(StackEnvironment) \
 	pStackPrefix=$(SolutionNamingPrefix) \
@@ -85,20 +83,6 @@ STACK_PARAMETERS = \
 	pLogRetentionDays=$(LogRetentionDays) \
 	pMemberAccountId=$(MemberAccountId) \
 	pInspecTestFilesBucket=$(STACK_INSPEC_TEST_BUCKET)
-
-
-# Override TEST_AMI_ID with the AMI ID you want to run the Test Document against
-# This will not terminate the instance, so you must clean up manually
-TEST_AMI_ID?=ami-0e5c476c0a7d0c62b
-TEST_INSTANCE_TYPE?=t3.micro
-TEST_DOC_NAME_PREFIX?=$(StackName)-rAutomationDocTestLinuxAMI-
-FIND_DOC_NAME_CMD=aws ssm list-documents --filters 'Key=Name,Values=$(TEST_DOC_NAME_PREFIX)' | grep Name | cut -d '"' -f 4
-.PHONY: test-inspec
-test-inspec:
-	aws ssm start-automation-execution --document-name "$(shell $(FIND_DOC_NAME_CMD))" --parameters "sourceAMIid=$(TEST_AMI_ID),InstanceType=$(TEST_INSTANCE_TYPE)"
-	# Replace AUTOMATION_EXECUTION_ID with above output to check
-	@echo aws ssm get-automation-execution --automation-execution-id AUTOMATION_EXECUTION_ID
-	# Please ensure you clean up and terminate the EC2 instance (Output: startInstances.InstanceIds)
 
 #
 # OVERRIDE CICD TARGETS - Override after the CICD import (if any)
