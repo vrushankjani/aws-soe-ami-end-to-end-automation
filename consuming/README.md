@@ -33,6 +33,9 @@ This solution is tested in multi account setup. So it is recommended to use two 
 - One account where you publish the SOE baking solution as in 'publishing' folder
 - And another account here to use it as a member account for consuming this AMI
 
+### Subscription to CIS marketplace
+If you are using the same base AMI, sourced from CIS marketplace, as in the solution, then you would need to ensure that all the accounts that you want to share this AMI are subscribed to CIS marketplace - https://aws.amazon.com/marketplace/pp/B07M68CJS5/
+
 ### Event bus in member account
 Ensure that the default event bus is setup to allowing access from publishing account where you deploy the baking solution.
 
